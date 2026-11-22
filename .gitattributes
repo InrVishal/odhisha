@@ -1,0 +1,6 @@
+# Store text as LF in the repo and check it out as LF everywhere, so shell
+# scripts (the gitleaks hook) and SQL migrations behave the same on Windows and CI.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.woff2 binary

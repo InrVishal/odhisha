@@ -1,0 +1,10 @@
+#!/bin/sh
+# Blocks commits that contain secrets. Install gitleaks first:
+#   Windows: winget install gitleaks.gitleaks    macOS: brew install gitleaks
+#   Linux:   https://github.com/gitleaks/gitleaks/releases
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks is not installed, so this commit was blocked." >&2
+  echo "Install it (see .githooks/pre-commit) and commit again." >&2
+  exit 1
+fi
+exec gitleaks git --pre-commit --staged --redact --no-banner --config .gitleaks.toml

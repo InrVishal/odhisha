@@ -1,0 +1,10 @@
+# ZAP baseline rule overrides: <rule id>	<IGNORE|WARN|FAIL>	<reason>
+# High-risk passive rules fail the build.
+10020	FAIL	Anti-clickjacking header
+10021	FAIL	X-Content-Type-Options header missing
+10035	FAIL	Strict-Transport-Security header
+10038	FAIL	Content Security Policy header not set
+10055	WARN	CSP: reported for review
+10098	FAIL	Cross-domain misconfiguration
+10202	WARN	Forms are Server Actions (Origin-header CSRF check) or Auth.js (double-submit token)
+90022	FAIL	Application error disclosure

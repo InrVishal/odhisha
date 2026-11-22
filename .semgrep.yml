@@ -1,0 +1,78 @@
+# Project rules. CI runs these with the p/default, p/owasp-top-ten,
+# p/typescript and p/python registry packs and fails on ERROR findings.
+rules:
+  - id: no-raw-sql
+    languages: [typescript]
+    severity: ERROR
+    message: >-
+      sql.raw() puts a string into SQL without parameters. Use the sql`...`
+      template tag or Drizzle's query builder.
+    pattern: sql.raw(...)
+    paths:
+      exclude: [tests/]
+
+  - id: no-string-built-sql
+    languages: [typescript]
+    severity: ERROR
+    message: Build queries with the sql`...` tag or the query builder, never string concatenation.
+    pattern-either:
+      - pattern: $DB.execute(`...${$X}...`)
+      - pattern: $DB.execute("..." + $X)
+      - pattern: $DB.query(`...${$X}...`)
+      - pattern: $DB.query("..." + $X)
+    paths:
+      exclude: [tests/]
+
+  - id: no-eval
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: eval and new Function are banned.
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+
+  - id: no-dangerously-set-inner-html
+    languages: [typescript]
+    severity: ERROR
+    message: dangerouslySetInnerHTML is banned. Render text, not HTML.
+    pattern: <$EL dangerouslySetInnerHTML={...} />
+
+  - id: no-child-process-exec
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: Use execFile/spawn with an argument array, never a shell string.
+    pattern-either:
+      - pattern: require("child_process").exec(...)
+      - pattern: child_process.exec(...)
+      - pattern: execSync(...)
+      - pattern: exec(...)
+    paths:
+      include: [lib/, app/, scripts/]
+
+  - id: no-public-secret-env
+    languages: [typescript]
+    severity: ERROR
+    message: Secrets must never use the NEXT_PUBLIC_ prefix (it ships them to the browser).
+    pattern-regex: process\.env\.NEXT_PUBLIC_\w*(SECRET|TOKEN|PASSWORD|PRIVATE|KEY|DSN|DATABASE)\w*
+
+  - id: py-no-shell-true
+    languages: [python]
+    severity: ERROR
+    message: shell=True is banned in the agent. Pass an argument list.
+    pattern: $F(..., shell=True, ...)
+
+  - id: py-no-eval-exec
+    languages: [python]
+    severity: ERROR
+    message: eval/exec are banned in the agent.
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+
+  - id: py-no-os-system
+    languages: [python]
+    severity: ERROR
+    message: os.system/os.popen run a shell. Use subprocess with a list and shell=False.
+    pattern-either:
+      - pattern: os.system(...)
+      - pattern: os.popen(...)

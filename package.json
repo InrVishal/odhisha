@@ -1,26 +1,55 @@
 {
-  "name": "nightshift-tmp",
+  "name": "nightshift",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "next typegen && tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:coverage": "vitest run --coverage",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "audit:deps": "npm audit --audit-level=high --omit=dev && npm audit --audit-level=high",
+    "prepare": "node scripts/install-hooks.mjs"
   },
   "dependencies": {
+    "@auth/drizzle-adapter": "1.11.3",
+    "@neondatabase/serverless": "1.2.1",
+    "@upstash/ratelimit": "2.2.1",
+    "@upstash/redis": "1.41.0",
+    "drizzle-orm": "0.45.4",
     "next": "16.4.6",
+    "next-auth": "5.0.0-beta.32",
+    "pg": "8.23.1",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "server-only": "0.0.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.17",
     "@tailwindcss/turbopack": "4.3.3",
-    "@types/node": "^20",
+    "@types/node": "22.20.5",
+    "@types/pg": "8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitest/coverage-v8": "5.1.1",
+    "dotenv": "18.0.10",
+    "drizzle-kit": "0.31.11",
     "eslint": "^9",
     "eslint-config-next": "16.4.6",
+    "fast-check": "4.10.3",
     "tailwindcss": "4.3.3",
-    "typescript": "^5"
+    "tsx": "4.23.15",
+    "typescript": "^5",
+    "vitest": "5.1.1"
+  },
+  "engines": {
+    "node": ">=22.12"
   }
 }

@@ -1,0 +1,13 @@
+# Default gitleaks rules plus our own token format.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "nightshift-node-token"
+description = "NightShift node agent token"
+regex = '''nsn_[A-Za-z0-9_-]{43}'''
+keywords = ["nsn_"]
+
+[allowlist]
+description = "Example env file has no real values"
+paths = ['''\.env\.example$''']
