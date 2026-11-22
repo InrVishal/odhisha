@@ -61,6 +61,19 @@ describe("heading and dash checks", () => {
   it("strips scripts, styles and tags", () => {
     expect(htmlToText("<p>Hi&nbsp;<b>there</b></p><script>leverage()</script><style>.robust{}</style>")).toBe("Hi there");
   });
+
+  it("handles closing tags with whitespace or attributes, as browsers do (CodeQL js/bad-tag-filter)", () => {
+    expect(htmlToText("<p>a</p><script>leverage()</script ><p>b</p>")).toBe("a b");
+    expect(htmlToText("<p>a</p><SCRIPT type='x'>robust</SCRIPT foo><p>b</p>")).toBe("a b");
+    expect(htmlToText("<p>a</p><style media='x'>.robust{}</style\t><p>b</p>")).toBe("a b");
+    expect(htmlToText("<template><p>unlock</p></template>ok")).toBe("ok");
+  });
+
+  it("decodes entities exactly once (CodeQL js/double-escaping)", () => {
+    expect(htmlToText("&amp;lt;b&amp;gt;")).toBe("&lt;b&gt;");
+    expect(htmlToText("Tom &amp; Jerry &lt;3 &quot;hi&quot; it&#x27;s")).toBe("Tom & Jerry <3 \"hi\" it's");
+    expect(htmlToText("&unknown; stays")).toBe("&unknown; stays");
+  });
 });
 
 describe("site copy", () => {

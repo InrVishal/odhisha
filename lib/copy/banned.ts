@@ -68,19 +68,32 @@ export function countEmDashes(text: string): number {
   return (text.match(/—/g) ?? []).length;
 }
 
-/** Visible text of an HTML page: drops scripts, styles and tags, decodes basic entities. */
+const ENTITIES: Readonly<Record<string, string>> = {
+  "&nbsp;": " ",
+  "&#x27;": "'",
+  "&#39;": "'",
+  "&apos;": "'",
+  "&quot;": '"',
+  "&lt;": "<",
+  "&gt;": ">",
+  "&amp;": "&",
+};
+
+/**
+ * Visible text of an HTML page, for the copy check (our own built pages, not
+ * user input; this is not a sanitizer). Drops script/style/template blocks
+ * and tags, then decodes a few entities.
+ *
+ * - Closing tags may carry whitespace or junk (`</script >`, `</SCRIPT x>`),
+ *   which browsers accept, so the patterns allow it.
+ * - Entities are decoded in ONE pass, so `&amp;lt;` becomes `&lt;` (literal
+ *   text), not `<`. Decoding `&amp;` first would unescape twice.
+ */
 export function htmlToText(html: string): string {
   return html
-    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
-    .replace(/<template\b[\s\S]*?<\/template>/gi, " ")
+    .replace(/<(script|style|template)\b[^>]*>[\s\S]*?<\/\1\b[^>]*>/gi, " ")
     .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&#x27;|&#39;|&apos;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
+    .replace(/&(?:nbsp|#x27|#39|apos|quot|lt|gt|amp);/g, (e) => ENTITIES[e] ?? e)
     .replace(/\s+/g, " ")
     .trim();
 }
