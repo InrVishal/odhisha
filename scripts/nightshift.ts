@@ -21,7 +21,7 @@
  *   results <jobId> <out.json>
  *   earnings
  */
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const API = (process.env.NIGHTSHIFT_API ?? "https://nightshift-ten-iota.vercel.app").replace(/\/$/, "");
@@ -92,8 +92,9 @@ async function main(): Promise<void> {
       const file = sub;
       const gpuClass = rest[0] ?? "cpu";
       if (!file) die("usage: quote <texts.txt> [class]");
-      if (statSync(file).size > 3 * 1024 * 1024) die("that file is over 3 MB, the job limit");
-      const texts = readFileSync(file, "utf8").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const raw = readFileSync(file, "utf8");
+      if (Buffer.byteLength(raw) > 3 * 1024 * 1024) die("that file is over 3 MB, the job limit");
+      const texts = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
       const r = await call<{ job: { id: string; pricePaise: number; deadlineAt: string; breakdown: Record<string, number> } }>("POST", "/api/jobs/quote", {
         workloadType: "text_embeddings",
         gpuClass,
@@ -124,11 +125,15 @@ async function main(): Promise<void> {
       if (!res.ok) die(`${res.status}: ${(await res.text()).slice(0, 300)}`);
       const target = path.resolve(out);
       if (path.extname(target) !== ".json") die("results are saved as a .json file");
-      if (existsSync(target)) die(`${target} already exists; pick a new file name`);
       const parsed = (await res.json()) as { items?: unknown };
       if (!Array.isArray(parsed.items)) die("unexpected results format");
       // Re-serialised from the parsed result, never the raw response bytes.
-      writeFileSync(target, JSON.stringify({ items: parsed.items }), { flag: "wx" });
+      // "wx" creates the file atomically and fails if it already exists.
+      try {
+        writeFileSync(target, JSON.stringify({ items: parsed.items }), { flag: "wx" });
+      } catch (e) {
+        die((e as NodeJS.ErrnoException).code === "EEXIST" ? `${target} already exists; pick a new file name` : String(e));
+      }
       console.log(`Saved ${parsed.items.length} results to ${target}`);
       return;
     }

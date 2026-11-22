@@ -125,7 +125,10 @@ def test_memory_limit_kills_a_hog(tmp_path: Path) -> None:
         limits=Limits(memory="64m", cpus="1"),
         timeout=120,
     )
-    assert "exit=137" in r.stdout
+    # Docker Desktop's kernel kills just the hog (the shell reports exit=137);
+    # a Linux host may kill the whole container (docker run exits 137). Either
+    # way the process over the limit never gets its memory.
+    assert "exit=137" in r.stdout or r.returncode == 137
 
 
 def test_timeout_hard_kills_and_removes_the_container(tmp_path: Path) -> None:
