@@ -22,7 +22,8 @@ export function proxy(request: NextRequest) {
   }
 
   const nonce = generateNonce();
-  const csp = buildPageCsp(nonce, process.env.NODE_ENV === "development" ? "development" : "production");
+  const https = request.nextUrl.protocol === "https:" || request.headers.get("x-forwarded-proto") === "https";
+  const csp = buildPageCsp(nonce, process.env.NODE_ENV === "development" ? "development" : "production", https);
 
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-nonce", nonce);

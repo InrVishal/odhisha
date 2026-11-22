@@ -19,14 +19,14 @@ export function SignInForm() {
         maxLength={254}
         aria-describedby={state.error ? "email-error" : undefined}
         aria-invalid={state.error ? true : undefined}
-        className="rounded border border-zinc-400 bg-transparent px-3 py-2"
+        className="rounded border border-mist/60 bg-night px-3 py-2"
       />
       {state.error ? (
-        <p id="email-error" role="alert" className="text-sm text-red-400">
+        <p id="email-error" role="alert" className="text-sm text-danger">
           {state.error}
         </p>
       ) : null}
-      <button type="submit" disabled={pending} className="rounded bg-zinc-100 px-4 py-2 font-medium text-zinc-900 disabled:opacity-60">
+      <button type="submit" disabled={pending} className="rounded bg-orange px-4 py-2 font-semibold text-deep disabled:opacity-60">
         {pending ? "Sending..." : "Email me a login link"}
       </button>
     </form>

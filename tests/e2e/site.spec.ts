@@ -1,0 +1,84 @@
+import { expect, test } from "@playwright/test";
+import { isRemote, useFreshIp, writeTestsInOneBrowserWhenRemote } from "./helpers";
+
+test("pricing calculator shows the full breakdown, electricity included", async ({ page }) => {
+  await page.goto("/pricing");
+  const out = page.locator("output");
+  // Defaults: RTX 4070 PC, 10 hours, ₹9/unit, ₹25/hr → ₹395 (see tests/unit/pricing.test.ts).
+  await expect(out).toContainText("₹395");
+  await expect(out).toContainText("Owner's electricity");
+  await expect(out).toContainText("₹31.50");
+  await expect(out).toContainText("Verification buffer (12%)");
+  await expect(out).toContainText("₹33.78");
+  await expect(out).toContainText("The owner receives ₹281.50, and ₹31.50 of that is their electricity.");
+
+  await page.getByLabel("Electricity tariff (₹ per unit)").fill("12");
+  await expect(out).toContainText("₹42"); // 0.35 kW × 10 h × ₹12
+
+  await page.getByLabel("GPU hours").fill("abc");
+  await expect(out).toContainText("Enter hours as a number");
+});
+
+test("home page shows the demo-mode banner and a computed sample quote", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByText("Payments, payouts and EMI are simulated (demo mode)")).toBeVisible();
+  await expect(page.getByText(/Sample quote: .*₹395, done by 6:00 AM/)).toBeVisible();
+});
+
+test("waitlist gives the same answer for a repeat signup", async ({ page, browserName }) => {
+  writeTestsInOneBrowserWhenRemote(browserName);
+  await useFreshIp(page);
+  const email = `repeat-${Date.now()}@example.in`;
+  for (let i = 0; i < 2; i++) {
+    await page.goto("/waitlist?as=buyer");
+    await expect(page.getByRole("radio", { name: "Run AI jobs" })).toBeChecked();
+    await page.getByLabel("Email", { exact: true }).fill(email);
+    await page.getByRole("checkbox").check();
+    await page.getByRole("button", { name: "Join the waitlist" }).click();
+    await expect(page.getByRole("status")).toContainText("If that email wasn't already on the list, it is now.");
+  }
+});
+
+test("waitlist explains each missing field", async ({ page }) => {
+  await useFreshIp(page);
+  await page.goto("/waitlist");
+  await page.getByLabel("Email", { exact: true }).fill("not-an-email");
+  await page.getByRole("button", { name: "Join the waitlist" }).click();
+  await expect(page.getByText("That email address doesn't look right.")).toBeVisible();
+  await expect(page.getByText("Tick the box so we're allowed to email you.")).toBeVisible();
+});
+
+test("server HTML carries a nonce CSP and no inline style attributes", async ({ request }) => {
+  // Style attributes in server HTML would be blocked by the CSP. (Styles React
+  // sets from JS after load are allowed, so the live DOM isn't checked.)
+  for (const path of ["/", "/pricing", "/waitlist", "/faq"]) {
+    const res = await request.get(path);
+    expect(res.headers()["content-security-policy"]).toMatch(/script-src 'self' 'nonce-/);
+    expect(await res.text(), path).not.toMatch(/\sstyle="/);
+  }
+});
+
+test("no console errors (including CSP violations) on any public page", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("console", (m) => {
+    if (m.type() === "error") errors.push(m.text());
+  });
+  for (const path of ["/", "/how-it-works", "/owners", "/builders", "/pricing", "/time-bank", "/faq", "/waitlist", "/privacy", "/terms"]) {
+    await page.goto(path);
+    await page.waitForLoadState("networkidle");
+  }
+  expect(errors).toEqual([]);
+});
+
+test("waitlist signups are rate limited per IP (5 an hour)", async ({ page }) => {
+  test.skip(isRemote, "needs a spoofable client IP, which only the local server allows");
+  await useFreshIp(page);
+  for (let i = 0; i < 6; i++) {
+    await page.goto("/waitlist");
+    await page.getByLabel("Email", { exact: true }).fill(`limit-${i}-${Date.now()}@example.in`);
+    await page.getByRole("checkbox").check();
+    await page.getByRole("button", { name: "Join the waitlist" }).click();
+    if (i < 5) await expect(page.getByRole("status")).toBeVisible();
+  }
+  await expect(page.getByText("Too many tries from your network")).toBeVisible();
+});

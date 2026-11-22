@@ -39,6 +39,12 @@ describe("page CSP", () => {
     expect(d.has("upgrade-insecure-requests")).toBe(true);
   });
 
+  it("adds upgrade-insecure-requests only for pages served over HTTPS", () => {
+    expect(buildPageCsp("n", "production", true)).toContain("upgrade-insecure-requests");
+    expect(buildPageCsp("n", "production", false)).not.toContain("upgrade-insecure-requests");
+    expect(buildPageCsp("n", "development", true)).not.toContain("upgrade-insecure-requests");
+  });
+
   it("only adds unsafe-eval in development", () => {
     expect(buildPageCsp("n", "development")).toContain("'unsafe-eval'");
     expect(buildPageCsp("n", "development")).not.toContain("unsafe-inline");
@@ -77,6 +83,16 @@ describe("proxy", () => {
     const forwardedNonce = res.headers.get("x-middleware-request-x-nonce");
     expect(forwardedNonce).toBeTruthy();
     expect(csp).toContain(`'nonce-${forwardedNonce}'`);
+  });
+
+  it("upgrades insecure requests on HTTPS (and behind an HTTPS proxy), not on plain-HTTP local servers", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const csp = (req: NextRequest) => proxy(req).headers.get("content-security-policy")!;
+    expect(csp(new NextRequest("https://nightshift.test/"))).toContain("upgrade-insecure-requests");
+    expect(csp(new NextRequest("http://127.0.0.1:3300/"))).not.toContain("upgrade-insecure-requests");
+    expect(csp(new NextRequest("http://internal/", { headers: { "x-forwarded-proto": "https" } }))).toContain(
+      "upgrade-insecure-requests",
+    );
   });
 
   it("gives API routes a deny-all CSP and no-store", () => {

@@ -91,6 +91,12 @@ export const envSchema = z
 
     SENTRY_DSN: z.url().optional(),
 
+    /** Public contact for privacy requests (DPDP). Shown on /privacy when set. */
+    CONTACT_EMAIL: optionalNonEmpty.pipe(z.email().optional()),
+
+    /** Canonical site URL for metadata, robots and sitemap. */
+    SITE_URL: z.url().optional(),
+
     // Payments, UPI payouts and EMI are always simulated in this prototype.
     DEMO_MODE: z
       .enum(["true", "false"])

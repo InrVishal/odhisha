@@ -13,6 +13,7 @@ To report a vulnerability, email the team rather than opening a public issue.
 | A01 | Framing blocked | `frame-ancestors 'none'`, `X-Frame-Options: DENY` | `tests/unit/headers.test.ts`, `scripts/check-headers.mjs` |
 | A02 Cryptographic failures | Node tokens: 256-bit random, stored as SHA-256 | `lib/security/tokens.ts`, `node_token.token_hash` | `tests/unit/tokens.test.ts`, `tests/integration/schema.test.ts` |
 | A02 | Magic-link tokens stored hashed (Auth.js), single use, 15-minute expiry | `lib/auth/index.ts` | Manual: reused link → `/signin/error` |
+| A02 | `upgrade-insecure-requests` on every page served over HTTPS (all deployed environments). Left off on plain-HTTP local servers, where WebKit would otherwise break every asset | `lib/security/headers.ts`, `proxy.ts` | `headers.test.ts` |
 | A02 | HSTS (2 years, subdomains, preload) | `lib/security/headers.ts` | `headers.test.ts`, `check-headers.mjs` |
 | A02 | Per-fragment data keys wrapped with `DATA_ENCRYPTION_KEY` | schema column `fragment.wrapped_key` | ⏳ phase 3 |
 | A03 Injection | All SQL through Drizzle (parameterized). `sql.raw` and string-built SQL are banned | `lib/db/client.ts`, `.semgrep.yml` (`no-raw-sql`, `no-string-built-sql`) | Semgrep in CI |
@@ -30,6 +31,8 @@ To report a vulnerability, email the team rather than opening a public issue.
 | A07 | Database sessions. httpOnly, SameSite=Lax cookies, Secure with the `__Secure-` prefix when deployed. New session on every login, and the browser's previous session is revoked | `lib/auth/index.ts` (`revokeIncomingSession`) | Manual, verified on a local prod build; Playwright ⏳ |
 | A07 | Rate limits: login per IP (10/15 min) and per email (3/15 min). 429 with `Retry-After` | `lib/ratelimit.ts`, `app/api/auth/[...nextauth]/route.ts` | `tests/unit/ratelimit.test.ts`; manual: 11th POST → 429 |
 | A07 | CSRF: Auth.js double-submit token on its endpoints; Next.js Server Actions check the Origin header | Auth.js, Next.js defaults (left on) | Manual: POST without token → `MissingCSRF` |
+| A04 / A07 | Waitlist: Zod validation (email ≤ 254 chars, fixed interest values, consent required), 5 signups per IP per hour, and the same reply for new and existing emails (no way to check who signed up) | `lib/waitlist.ts`, `app/(marketing)/waitlist/actions.ts` | `tests/integration/waitlist.test.ts`; `tests/e2e/site.spec.ts` (repeat signup, rate limit) |
+| A03 / XSS | Server HTML has no inline `style` attributes (a nonce doesn't cover them), and pages load with zero console or CSP errors | components use Tailwind classes only | `tests/e2e/site.spec.ts` |
 | A08 Integrity failures | Coordinator signs every task (Ed25519). Agent verifies signature, expiry and nonce. Agent updates only from signed releases | `COORDINATOR_SIGNING_KEY` | ⏳ phase 4 |
 | A08 | gitleaks pre-commit hook and CI full-history scan | `.githooks/pre-commit`, `.gitleaks.toml` | CI job 4 |
 | A09 Logging failures | Audit log: logins, logouts, rate-limit hits (later: token create/revoke, payouts, admin actions, quarantines). IPs stored only as an HMAC | `lib/audit.ts` | `schema.test.ts` (IP never stored) |

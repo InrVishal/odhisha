@@ -19,7 +19,13 @@ export function generateNonce(): string {
   return Buffer.from(bytes).toString("base64");
 }
 
-export function buildPageCsp(nonce: string, mode: Mode): string {
+/**
+ * @param https whether the page itself was served over HTTPS. Only then is
+ *   `upgrade-insecure-requests` added: on plain-HTTP local servers WebKit
+ *   would rewrite every asset URL to https:// and the page would break.
+ *   Deployed environments are always HTTPS, so they always get it.
+ */
+export function buildPageCsp(nonce: string, mode: Mode, https = true): string {
   const dev = mode === "development";
   const directives: string[] = [
     "default-src 'self'",
@@ -37,9 +43,7 @@ export function buildPageCsp(nonce: string, mode: Mode): string {
     "worker-src 'self' blob:",
     "manifest-src 'self'",
   ];
-  // Browsers would try to upgrade http://localhost subresources, which breaks
-  // local dev. Production is always HTTPS anyway.
-  if (!dev) directives.push("upgrade-insecure-requests");
+  if (https && !dev) directives.push("upgrade-insecure-requests");
   return directives.join("; ");
 }
 
