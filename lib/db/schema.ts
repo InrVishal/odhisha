@@ -147,7 +147,8 @@ export const nodes = pgTable(
     status: nodeStatus("status").notNull().default("pending"),
     paused: boolean("paused").notNull().default(false),
     tariffPaisePerKwh: integer("tariff_paise_per_kwh").notNull().default(900),
-    ownerRatePaisePerHr: integer("owner_rate_paise_per_hr").notNull(),
+    /** ₹25/hr by default (DEFAULT_OWNER_RATE_PAISE_PER_HR in lib/pricing.ts). */
+    ownerRatePaisePerHr: integer("owner_rate_paise_per_hr").notNull().default(2500),
     /** Minutes after local midnight. Window may wrap past midnight (23:00–07:00). */
     nightWindowStartMin: smallint("night_window_start_min").notNull().default(23 * 60),
     nightWindowEndMin: smallint("night_window_end_min").notNull().default(7 * 60),
@@ -299,7 +300,11 @@ export const buyerLedger = pgTable(
   (t) => [index("buyer_ledger_buyer_idx").on(t.buyerId, t.createdAt)],
 );
 
-/** Time-Bank credits in GPU-seconds. + = earned, − = spent. */
+/**
+ * Time-Bank credits in STANDARD GPU-seconds (1 = one second on an RTX 3060;
+ * weighted by benchmark, see lib/timebank.ts). + = earned, − = spent.
+ * Credits are not money: there is no cash-out entry type.
+ */
 export const creditLedger = pgTable(
   "credit_ledger",
   {

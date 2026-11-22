@@ -14,6 +14,7 @@ import {
   ownerLedger,
   users,
 } from "@/lib/db/schema";
+import { DEFAULT_OWNER_RATE_PAISE_PER_HR } from "@/lib/pricing";
 import { generateNodeToken, hashToken } from "@/lib/security/tokens";
 import { freshDb } from "../helpers/db";
 
@@ -58,6 +59,11 @@ describe("migrations", () => {
     for (const t of ["user", "account", "session", "verificationToken", "waitlist", "node", "node_token", "job", "fragment", ...APPEND_ONLY_TABLES]) {
       expect(names).toContain(t);
     }
+  });
+
+  it("new nodes default to the ₹25/hr owner rate used by the pricing engine", async () => {
+    const [n] = await db.insert(nodes).values({ ownerId, name: "default-rate", gpuClass: "rtx3060", defaultWatts: 320 }).returning();
+    expect(n!.ownerRatePaisePerHr).toBe(DEFAULT_OWNER_RATE_PAISE_PER_HR);
   });
 
   it("apply defaults: role user, trust 500, ₹9/kWh tariff, 23:00–07:00 window", async () => {

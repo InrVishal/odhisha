@@ -5,11 +5,14 @@
  * Uses DATABASE_URL_UNPOOLED when set (Neon recommends a direct connection
  * for migrations), otherwise DATABASE_URL.
  */
-import "dotenv/config";
+import { config } from "dotenv";
 import { createDb, migrateDb } from "../lib/db/client";
 
+// Real environment variables (CI) win; then .env.local, then .env.
+config({ path: [".env.local", ".env"], quiet: true });
+
 async function main() {
-  const url = process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL;
+  const url = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
   if (!url) {
     console.error("DATABASE_URL is not set");
     process.exit(1);

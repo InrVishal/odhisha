@@ -1,0 +1,1 @@
+ALTER TABLE "node" ALTER COLUMN "owner_rate_paise_per_hr" SET DEFAULT 2500;

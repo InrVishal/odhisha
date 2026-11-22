@@ -60,12 +60,12 @@ jobs:
         with: { name: coverage, path: coverage/, retention-days: 7 }
 
   integration:
-    name: 3 · Integration tests (Postgres 17)
+    name: 3 · Integration tests (Postgres 18)
     needs: unit
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        image: postgres:18
         env:
           POSTGRES_PASSWORD: postgres
         ports: ["5432:5432"]
@@ -95,10 +95,13 @@ jobs:
       - name: Secrets (gitleaks, full history)
         env: { GITLEAKS_VERSION: "8.30.1" }
         run: |
-          curl -sSfL -o gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -sSfL -o checksums.txt "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
-          grep "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" checksums.txt | sha256sum -c -
-          tar -xzf gitleaks.tgz gitleaks
+          # Keep the release's own filename: the checksum file refers to it.
+          F="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          BASE="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          curl -sSfL -o "$F" "$BASE/$F"
+          curl -sSfL -o checksums.txt "$BASE/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep " $F\$" checksums.txt | sha256sum -c -
+          tar -xzf "$F" gitleaks
           ./gitleaks git --redact --no-banner --config .gitleaks.toml .
 
       - name: npm audit (fail on high/critical)
@@ -127,9 +130,8 @@ jobs:
           python -m pip install --quiet "pip-audit==2.10.1"
           pip-audit --strict -r agent/requirements.lock
 
-      - name: Banned words in site copy
-        if: hashFiles('scripts/check-copy.mjs') != ''
-        run: node scripts/check-copy.mjs
+      - name: Banned words in site copy (source) and COPY.md in sync
+        run: npm run copy:check -- --source-only
 
   build:
     name: 5 · Build
@@ -141,6 +143,15 @@ jobs:
         with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
       - run: npm ci
       - run: npm run build
+      - name: Banned words on the built site (crawls every page)
+        run: npm run copy:check
+      - name: Accessibility, keyboard and site checks on the build (Chromium)
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test --project=chromium
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with: { name: playwright-build, path: "playwright-report/\ntest-results/", retention-days: 7 }
 
   preview:
     name: Preview deploy (own Neon branch)
@@ -239,6 +250,9 @@ jobs:
           LHCI_BASE_URL: ${{ needs.preview.outputs.url }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: npx --yes @lhci/cli@0.16.1 autorun --config=lighthouserc.cjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with: { name: lighthouse, path: lhci_reports/, retention-days: 14 }
 
   production:
     name: Production deploy
@@ -275,6 +289,12 @@ jobs:
 
       - name: Health check
         run: curl -sSf "${{ secrets.PROD_BASE_URL }}/api/health"
+
+      - name: Lighthouse on production (includes the SEO crawlability audit)
+        env:
+          LHCI_BASE_URL: ${{ secrets.PROD_BASE_URL }}
+          LHCI_PRODUCTION: "1"
+        run: npx --yes @lhci/cli@0.16.1 autorun --config=lighthouserc.cjs
 
   cleanup-main-branch:
     name: Delete the main-run Neon branch
