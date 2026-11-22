@@ -348,24 +348,36 @@ def test_install_needs_pipx(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
 
 
 def test_benchmark_score_is_normalised_to_an_rtx_3060() -> None:
-    assert benchmark.score_from_seconds(benchmark.REFERENCE_SECONDS) == 1000
-    assert benchmark.score_from_seconds(benchmark.REFERENCE_SECONDS / 2) == 2000
-    assert benchmark.score_from_seconds(0) == benchmark.MAX_SCORE
-    assert benchmark.score_from_seconds(1e-9) == benchmark.MAX_SCORE
-    assert benchmark.score_from_seconds(1e9) == 1
+    ref = benchmark.REFERENCE_SENTENCES_PER_SECOND
+    assert benchmark.score_from_throughput(ref) == 1000
+    assert benchmark.score_from_throughput(ref * 2) == 2000
+    assert benchmark.score_from_throughput(ref / 20) == 50
+    assert benchmark.score_from_throughput(ref * 1000) == benchmark.MAX_SCORE
+    assert benchmark.score_from_throughput(0) == 1
 
 
-def test_benchmark_times_the_batch_without_start_up() -> None:
-    ticks = iter([0.0, 3.0, 3.0, 6.5])  # warm-up 3 s (start-up), batch 3.5 s → 0.5 s of work
-    calls: list[int] = []
+def test_benchmark_measures_throughput_on_a_large_batch() -> None:
+    # Start-up 3 s; the 1000-sentence batch takes 3 s + 2.5 s of work → 400/s → 100.
+    ticks = iter([0.0, 3.0, 3.0, 8.5])
+    sizes: list[int] = []
     score = benchmark.run_benchmark(
         updates_pin(),
         gpu=False,
-        run=lambda **kw: calls.append(len(json.loads(kw["input_bytes"])["texts"])) or b"",
+        run=lambda **kw: sizes.append(len(json.loads(kw["input_bytes"])["texts"])) or b"",
         clock=lambda: next(ticks),
     )
-    assert calls == [1, 256]
-    assert score == 2000
+    assert sizes == [1, benchmark.BATCH]
+    assert score == benchmark.score_from_throughput(999 / 2.5)
+
+
+def test_noisy_start_up_never_inflates_the_score() -> None:
+    # The bug CI found: when the batch costs about the same as start-up, the
+    # difference is noise. The score must fall back to the whole run (lower),
+    # never shoot to the cap.
+    ticks = iter([0.0, 4.0, 4.0, 8.05])  # batch run 4.05 s vs start-up 4.0 s
+    score = benchmark.run_benchmark(updates_pin(), gpu=False, run=lambda **_: b"", clock=lambda: next(ticks))
+    assert score == benchmark.score_from_throughput(999 / 4.05)
+    assert score < 1000
 
 
 def updates_pin() -> Any:

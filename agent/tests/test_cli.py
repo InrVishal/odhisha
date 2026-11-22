@@ -106,6 +106,10 @@ def test_start_runs_the_agent(state: Path, monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(cli, "Client", LoginClient)
     run("login", TOKEN)
     monkeypatch.setattr(cli, "docker_available", lambda: True)
+    # No real image pulls or benchmark runs in unit tests.
+    pulled: list[str] = []
+    monkeypatch.setattr(cli, "ensure_image", lambda img: pulled.append(img) or True)
+    monkeypatch.setattr(cli.benchmark, "run_benchmark", lambda pin, gpu: 1000)
     ran: list[bool] = []
 
     def fake_run(self: Any, *, once: bool = False) -> None:
@@ -114,6 +118,8 @@ def test_start_runs_the_agent(state: Path, monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(cli.Agent, "run_forever", fake_run)
     assert run("start", "--once") == 0
     assert ran == [True]
+    # Every whitelisted image is fetched up front, by digest, before any work.
+    assert sorted(pulled) == sorted(pin.image for pin in cli.WHITELIST.values())
 
     def revoked(self: Any, *, once: bool = False) -> None:
         raise ApiError(401, "bad_token")
