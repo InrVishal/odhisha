@@ -61,6 +61,14 @@ export interface FragmentPricingInput {
 export interface PricingOptions {
   verificationBufferBps?: number;
   feeBps?: number;
+  /**
+   * Round electricity and owner pay up to the paisa for EACH fragment, then
+   * add them up (instead of adding exact amounts and rounding once). The
+   * coordinator quotes this way because it pays owners per fragment: the
+   * quote then always covers the sum of what each owner is paid, to the
+   * paisa. Can only make a price higher, by at most 2 paise per fragment.
+   */
+  roundPerFragment?: boolean;
 }
 
 export interface PriceBreakdown {
@@ -130,6 +138,8 @@ export function priceJob(fragments: readonly FragmentPricingInput[], options: Pr
   // owner pay paise = Σ rate·s / 3600.
   let electricityNum = 0n;
   let ownerPayNum = 0n;
+  let electricityRounded = 0n;
+  let ownerPayRounded = 0n;
   let gpuSeconds = 0n;
   for (const f of fragments) {
     checkInt("gpuSeconds", f.gpuSeconds, 1, LIMITS.maxGpuSecondsPerFragment);
@@ -137,13 +147,19 @@ export function priceJob(fragments: readonly FragmentPricingInput[], options: Pr
     checkInt("tariffPaisePerKwh", f.tariffPaisePerKwh, 1, LIMITS.maxTariffPaisePerKwh);
     checkInt("ownerRatePaisePerHr", f.ownerRatePaisePerHr, 0, LIMITS.maxOwnerRatePaisePerHr);
     const s = BigInt(f.gpuSeconds);
-    electricityNum += BigInt(f.watts) * s * BigInt(f.tariffPaisePerKwh);
-    ownerPayNum += BigInt(f.ownerRatePaisePerHr) * s;
+    const e = BigInt(f.watts) * s * BigInt(f.tariffPaisePerKwh);
+    const o = BigInt(f.ownerRatePaisePerHr) * s;
+    electricityNum += e;
+    ownerPayNum += o;
+    electricityRounded += ceilDiv(e, WATTS_PER_KW * SECONDS_PER_HOUR);
+    ownerPayRounded += ceilDiv(o, SECONDS_PER_HOUR);
     gpuSeconds += s;
   }
 
-  const electricity = ceilDiv(electricityNum, WATTS_PER_KW * SECONDS_PER_HOUR);
-  const ownerPay = ceilDiv(ownerPayNum, SECONDS_PER_HOUR);
+  const electricity = options.roundPerFragment
+    ? electricityRounded
+    : ceilDiv(electricityNum, WATTS_PER_KW * SECONDS_PER_HOUR);
+  const ownerPay = options.roundPerFragment ? ownerPayRounded : ceilDiv(ownerPayNum, SECONDS_PER_HOUR);
   const jobCost = electricity + ownerPay;
   const buffer = ceilDiv(jobCost * BigInt(bufferBps), BPS);
   const buffered = jobCost + buffer;

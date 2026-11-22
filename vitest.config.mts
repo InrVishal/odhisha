@@ -35,7 +35,7 @@ export default defineConfig({
       provider: "v8",
       include: ["lib/**/*.ts"],
       // Thin wrappers around Next.js/Auth.js runtime that only E2E can exercise.
-      exclude: ["lib/auth/index.ts", "lib/db/index.ts", "lib/auth/guards.ts", "lib/db/schema.ts"],
+      exclude: ["lib/auth/index.ts", "lib/db/index.ts", "lib/auth/guards.ts", "lib/db/schema.ts", "lib/api/deps.ts"],
       thresholds: { lines: 90, functions: 90, statements: 90, branches: 85 },
       reporter: ["text", "json-summary", "html"],
     },

@@ -1,3 +1,4 @@
+import { createPrivateKey } from "node:crypto";
 import { z } from "zod";
 
 /**
@@ -24,6 +25,14 @@ const base64Bytes = (bytes: number) =>
         return false;
       }
     }, `must be ${bytes} bytes, base64-encoded`);
+
+function isEd25519PrivateKey(v: string): boolean {
+  try {
+    return createPrivateKey({ key: Buffer.from(v, "base64"), format: "der", type: "pkcs8" }).asymmetricKeyType === "ed25519";
+  } catch {
+    return false;
+  }
+}
 
 const optionalNonEmpty = z
   .string()
@@ -84,10 +93,17 @@ export const envSchema = z
     CRON_SECRET: z.string().min(32, "must be at least 32 characters"),
 
     // Ed25519 private key (PKCS#8 DER, base64) used to sign agent tasks.
-    // Optional until the coordinator is built (phase 3).
-    COORDINATOR_SIGNING_KEY: optionalNonEmpty,
+    // Required in preview/production. Dev and tests use a random key per
+    // process when unset (lib/security/keys.ts).
+    COORDINATOR_SIGNING_KEY: optionalNonEmpty.pipe(
+      z
+        .string()
+        .refine(isEd25519PrivateKey, "must be an Ed25519 private key (PKCS#8 DER, base64)")
+        .optional(),
+    ),
     // 32-byte AES-256 key (base64) that wraps per-fragment data keys.
-    DATA_ENCRYPTION_KEY: base64Bytes(32).optional(),
+    // Required in preview/production, same dev/test fallback as above.
+    DATA_ENCRYPTION_KEY: optionalNonEmpty.pipe(base64Bytes(32).optional()),
 
     SENTRY_DSN: z.url().optional(),
 
@@ -137,6 +153,12 @@ export const envSchema = z
       }
       if (e.EMAIL_TRANSPORT !== "resend") {
         ctx.addIssue({ code: "custom", path: ["EMAIL_TRANSPORT"], message: "must be 'resend' in preview/production" });
+      }
+      if (!e.COORDINATOR_SIGNING_KEY) {
+        ctx.addIssue({ code: "custom", path: ["COORDINATOR_SIGNING_KEY"], message: "required in preview/production" });
+      }
+      if (!e.DATA_ENCRYPTION_KEY) {
+        ctx.addIssue({ code: "custom", path: ["DATA_ENCRYPTION_KEY"], message: "required in preview/production" });
       }
       if (e.RATE_LIMIT_BACKEND !== "upstash") {
         ctx.addIssue({ code: "custom", path: ["RATE_LIMIT_BACKEND"], message: "must be 'upstash' in preview/production" });

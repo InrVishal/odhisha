@@ -3,7 +3,10 @@ import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { getDb } from "@/lib/db";
 import { users } from "@/lib/db/schema";
+import { AuthzError, type SessionUser } from "./authz-error";
 import { auth } from "./index";
+
+export { AuthzError, type SessionUser };
 
 /**
  * Server-side authorization. Call one of these at the top of EVERY route
@@ -14,17 +17,6 @@ import { auth } from "./index";
  * Never trust an owner id that came from the client.
  */
 
-export interface SessionUser {
-  id: string;
-  role: "user" | "admin";
-}
-
-export class AuthzError extends Error {
-  constructor(public readonly status: 401 | 403) {
-    super(status === 401 ? "unauthenticated" : "forbidden");
-    this.name = "AuthzError";
-  }
-}
 
 export async function currentUser(): Promise<SessionUser | null> {
   const session = await auth();
