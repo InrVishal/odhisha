@@ -68,6 +68,26 @@ test("server HTML carries a nonce CSP and no inline style attributes", async ({ 
   }
 });
 
+test("robots.txt and sitemap.xml are valid and list the public pages", async ({ request }) => {
+  const robots = await request.get("/robots.txt");
+  expect(robots.status()).toBe(200);
+  expect(robots.headers()["content-type"]).toMatch(/^text\/plain/);
+  const txt = await robots.text();
+  expect(txt).toMatch(/^User-Agent: \*$/m);
+  expect(txt).toMatch(/^Allow: \/pricing$/m);
+  expect(txt).toMatch(/^Disallow: \/api\/$/m);
+  expect(txt).toMatch(/^Disallow: \/dashboard$/m);
+  expect(txt).toMatch(/^Sitemap: https?:\/\/\S+\/sitemap\.xml$/m);
+  // Every non-empty line is a known directive (what Lighthouse's robots-txt audit checks).
+  for (const line of txt.split("\n").filter((l) => l.trim())) expect(line).toMatch(/^(User-Agent|Allow|Disallow|Sitemap|Host): \S/);
+
+  const sitemap = await request.get("/sitemap.xml");
+  expect(sitemap.status()).toBe(200);
+  const xml = await sitemap.text();
+  expect(xml).toContain("<urlset");
+  for (const path of ["/pricing", "/time-bank", "/faq"]) expect(xml).toContain(`${path}</loc>`);
+});
+
 test("no console errors (including CSP violations) on any public page", async ({ page }) => {
   const errors: string[] = [];
   page.on("console", (m) => {

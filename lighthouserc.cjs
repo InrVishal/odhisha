@@ -1,9 +1,14 @@
 // Lighthouse CI: every public page must score 90+ in every category
 // (median of 3 runs). LHCI_BASE_URL is the deployment URL (set by CI).
 //
-// Vercel adds `X-Robots-Tag: noindex` to preview deployments, so the SEO
-// "is-crawlable" audit always fails there. On previews we skip that one audit;
-// the production run after deploy checks it (LHCI_PRODUCTION=1).
+// Two SEO audits can't pass on a Vercel preview, whatever the site does:
+// - "is-crawlable": Vercel adds `X-Robots-Tag: noindex` to every preview.
+// - "robots-txt": previews sit behind Deployment Protection. Lighthouse sends
+//   the bypass header with page loads but fetches /robots.txt on its own,
+//   without it, and gets a 302 to the Vercel login.
+// On previews we skip just those two. Both are still covered: the production
+// run after deploy (LHCI_PRODUCTION=1) checks them, and the E2E suite fetches
+// /robots.txt and /sitemap.xml from every preview with the bypass header.
 //
 // Reports stay on the CI runner (uploaded as a private artifact). Public
 // report storage is off: report settings would include the Vercel
@@ -17,7 +22,7 @@ const settings = {};
 if (process.env.VERCEL_AUTOMATION_BYPASS_SECRET) {
   settings.extraHeaders = JSON.stringify({ "x-vercel-protection-bypass": process.env.VERCEL_AUTOMATION_BYPASS_SECRET });
 }
-if (!isProduction) settings.skipAudits = ["is-crawlable"];
+if (!isProduction) settings.skipAudits = ["is-crawlable", "robots-txt"];
 
 module.exports = {
   ci: {
