@@ -15,6 +15,8 @@ from safetensors.torch import save_file
 def main(model_dir: str) -> None:
     d = pathlib.Path(model_dir)
     src = d / "pytorch_model.bin"
+    # Build time only, official pinned revision, tensors-only loader; the pickle is deleted below.
+    # nosemgrep: trailofbits.python.pickles-in-pytorch.pickles-in-pytorch
     state = torch.load(src, map_location="cpu", weights_only=True)
     tensors = {k: v.contiguous() for k, v in state.items()}
     # Tied weights share storage; safetensors needs each saved once.
