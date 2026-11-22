@@ -46,6 +46,15 @@ describe("envelope encryption (per-fragment keys)", () => {
     expect(keys.size).toBe(50);
   });
 
+  it("only accepts a full 16-byte tag (no truncated-tag forgeries)", () => {
+    const key = randomBytes(32);
+    const sealed = seal(key, Buffer.from("data"), "x");
+    expect(sealed.length).toBe(1 + 12 + 16 + 4);
+    // Cut the tag to 4 bytes and shift the ciphertext up: must not open.
+    const short = Buffer.concat([sealed.subarray(0, 1 + 12 + 4), sealed.subarray(1 + 12 + 16)]);
+    expect(() => open(key, short, "x")).toThrow();
+  });
+
   it("rejects garbage", () => {
     expect(() => open(master, Buffer.from([2, 1, 2]), "x")).toThrow("not a sealed value");
   });

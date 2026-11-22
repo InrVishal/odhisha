@@ -34,7 +34,7 @@ function checkKey(key: Buffer): void {
 export function seal(key: Buffer, plaintext: Uint8Array, aad: string): Buffer {
   checkKey(key);
   const iv = randomBytes(IV_BYTES);
-  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const cipher = createCipheriv("aes-256-gcm", key, iv, { authTagLength: TAG_BYTES });
   cipher.setAAD(Buffer.from(aad, "utf8"));
   const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   return Buffer.concat([Buffer.from([VERSION]), iv, cipher.getAuthTag(), ct]);
@@ -46,7 +46,7 @@ export function open(key: Buffer, sealed: Uint8Array, aad: string): Buffer {
   if (buf.length < HEADER || buf[0] !== VERSION) throw new EnvelopeError("not a sealed value");
   const iv = buf.subarray(1, 1 + IV_BYTES);
   const tag = buf.subarray(1 + IV_BYTES, HEADER);
-  const decipher = createDecipheriv("aes-256-gcm", key, iv);
+  const decipher = createDecipheriv("aes-256-gcm", key, iv, { authTagLength: TAG_BYTES });
   decipher.setAAD(Buffer.from(aad, "utf8"));
   decipher.setAuthTag(tag);
   try {
