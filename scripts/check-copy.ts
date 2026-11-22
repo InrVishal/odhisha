@@ -50,11 +50,14 @@ async function crawl(): Promise<void> {
     env: { ...process.env, NODE_ENV: "production" },
     stdio: ["ignore", "ignore", "inherit"],
   });
+  // Loopback only: this is the `next start` process spawned just above, which
+  // serves plain HTTP. Nothing leaves the machine, so TLS is not applicable.
   const base = `http://127.0.0.1:${port}`;
   try {
     let up = false;
     for (let i = 0; i < 60 && !up; i++) {
       try {
+        // nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request -- loopback to our own spawned server (see above)
         up = (await fetch(`${base}/api/health`)).status < 600;
       } catch {
         await new Promise((r) => setTimeout(r, 500));
