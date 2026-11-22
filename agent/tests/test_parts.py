@@ -96,10 +96,20 @@ def test_token_format_is_checked(bad: str, state: Path) -> None:
         secrets_store.save_token(bad, state)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
-def test_refuses_a_token_file_others_can_read(state: Path) -> None:
+@pytest.mark.parametrize("mode", [0o100640, 0o100604, 0o100660])
+def test_refuses_a_token_file_others_can_read(state: Path, monkeypatch: pytest.MonkeyPatch, mode: int) -> None:
+    # Fakes the file's mode rather than really loosening it on disk.
     secrets_store.save_token(TOKEN, state)
-    os.chmod(state / "token", 0o640)  # group-readable is enough to be refused
+    real_stat = Path.stat
+
+    def fake_stat(self: Path, *a: Any, **k: Any) -> Any:
+        st = real_stat(self, *a, **k)
+        if self.name != "token":
+            return st
+        return os.stat_result((mode, *tuple(st)[1:]))
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    monkeypatch.setattr(secrets_store.sys, "platform", "linux")
     with pytest.raises(secrets_store.TokenError, match="readable by other users"):
         secrets_store.load_token(state)
 

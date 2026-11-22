@@ -21,7 +21,8 @@
  *   results <jobId> <out.json>
  *   earnings
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 const API = (process.env.NIGHTSHIFT_API ?? "https://nightshift-ten-iota.vercel.app").replace(/\/$/, "");
 const SESSION = process.env.NIGHTSHIFT_SESSION ?? "";
@@ -91,6 +92,7 @@ async function main(): Promise<void> {
       const file = sub;
       const gpuClass = rest[0] ?? "cpu";
       if (!file) die("usage: quote <texts.txt> [class]");
+      if (statSync(file).size > 3 * 1024 * 1024) die("that file is over 3 MB, the job limit");
       const texts = readFileSync(file, "utf8").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
       const r = await call<{ job: { id: string; pricePaise: number; deadlineAt: string; breakdown: Record<string, number> } }>("POST", "/api/jobs/quote", {
         workloadType: "text_embeddings",
@@ -120,9 +122,14 @@ async function main(): Promise<void> {
       if (!sub || !out) die("usage: results <jobId> <out.json>");
       const res = await fetch(`${API}/api/jobs/${sub}/results`, { headers: { cookie: `${cookieName}=${SESSION}` } });
       if (!res.ok) die(`${res.status}: ${(await res.text()).slice(0, 300)}`);
-      const body = await res.text();
-      writeFileSync(out, body);
-      console.log(`Saved ${(JSON.parse(body) as { items: unknown[] }).items.length} results to ${out}`);
+      const target = path.resolve(out);
+      if (path.extname(target) !== ".json") die("results are saved as a .json file");
+      if (existsSync(target)) die(`${target} already exists; pick a new file name`);
+      const parsed = (await res.json()) as { items?: unknown };
+      if (!Array.isArray(parsed.items)) die("unexpected results format");
+      // Re-serialised from the parsed result, never the raw response bytes.
+      writeFileSync(target, JSON.stringify({ items: parsed.items }), { flag: "wx" });
+      console.log(`Saved ${parsed.items.length} results to ${target}`);
       return;
     }
     case "earnings": {
