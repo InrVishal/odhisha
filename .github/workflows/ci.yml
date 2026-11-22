@@ -179,7 +179,7 @@ jobs:
         with: { name: playwright-build, path: "playwright-report/\ntest-results/", retention-days: 7 }
 
   preview:
-    name: Preview deploy (own Neon branch) + live agent test
+    name: Preview deploy (own Neon branch) + live agent test + signed-in dashboards
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -236,11 +236,24 @@ jobs:
           PREVIEW_DATABASE_URL: ${{ steps.neon.outputs.db_url }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          E2E_AUTH_FILE: ${{ runner.temp }}/e2e-auth.json
         run: |
           python -m pip install --quiet --require-hashes -r agent/requirements.lock
           python -m pip install --quiet --no-deps ./agent
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           npx tsx tests/live/agent-preview.ts
+
+      # Signed in as the owner, buyer and admin from the step above, whose job
+      # really ran. No report upload: traces would hold the (1-hour) sessions.
+      - name: Signed-in dashboards in a real browser (buyer, owner, admin)
+        env:
+          E2E_BASE_URL: ${{ steps.deploy.outputs.url }}
+          E2E_AUTH_FILE: ${{ runner.temp }}/e2e-auth.json
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test tests/e2e/dashboard.spec.ts --project=chromium
+          rm -f "$E2E_AUTH_FILE"
 
   e2e:
     name: 6 · E2E against preview

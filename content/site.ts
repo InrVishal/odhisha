@@ -45,6 +45,8 @@ export const site = {
   },
   skipLink: "Skip to content",
   menu: "Menu",
+  /** Header link. Signed-in visitors are sent straight on to their dashboard. */
+  login: "Log in",
 };
 
 export const nav: PageMeta[] = [
