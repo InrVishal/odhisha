@@ -1,0 +1,1 @@
+ALTER TABLE "node" ADD COLUMN "watts_estimated" boolean DEFAULT false NOT NULL;

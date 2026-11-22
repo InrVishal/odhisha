@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nightshift-agent"
+version = "0.4.0"
+description = "NightShift node agent: runs whitelisted, signed jobs in a locked container overnight."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+# Runtime dependencies are kept to two. Exact pins with hashes live in
+# requirements.lock (install with `pip install --require-hashes -r requirements.lock`).
+dependencies = [
+  "cryptography>=44",
+  "keyring>=25",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-cov>=6",
+  "ruff>=0.9",
+  "mypy>=1.14",
+  "bandit>=1.8",
+  "pip-audit>=2.7",
+]
+
+[project.scripts]
+nightshift-agent = "nightshift_agent.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nightshift_agent"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "BLE", "A", "C4", "PT", "SIM", "RUF", "PL"]
+ignore = ["PLR0913", "PLR2004", "PLR0911", "PLR0912", "PLR0915"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: asserts, fixed tokens, compound assertions and direct docker calls are the point.
+"tests/**" = ["S101", "S105", "S106", "S108", "S311", "S603", "S607", "PLC0415", "PT011", "PT018", "RUF012"]
+# Container programs import torch only after validating their input.
+"workloads/**" = ["PLC0415"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+mypy_path = "src"
+packages = ["nightshift_agent"]
+
+[[tool.mypy.overrides]]
+module = ["keyring", "keyring.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["docker: needs a working Docker daemon (sandbox escape tests)"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["nightshift_agent"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "if __name__ == .__main__.:"]
+
+[tool.bandit]
+exclude_dirs = ["tests"]

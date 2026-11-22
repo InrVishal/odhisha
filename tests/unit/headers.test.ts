@@ -115,3 +115,13 @@ describe("proxy", () => {
     for (const f of ["camera=()", "microphone=()", "geolocation=()", "payment=()", "usb=()"]) expect(pp).toContain(f);
   });
 });
+
+describe("site URL", () => {
+  it("never throws, whatever the build sees", async () => {
+    const { siteUrl } = await import("@/lib/site-url");
+    expect(siteUrl({ SITE_URL: "https://nightshift.in" }).origin).toBe("https://nightshift.in");
+    expect(siteUrl({ SITE_URL: "[SENSITIVE]", VERCEL_PROJECT_PRODUCTION_URL: "x.vercel.app" }).origin).toBe("https://x.vercel.app");
+    expect(siteUrl({ SITE_URL: "javascript:alert(1)" }).origin).toBe("http://localhost:3000");
+    expect(siteUrl({}).origin).toBe("http://localhost:3000");
+  });
+});

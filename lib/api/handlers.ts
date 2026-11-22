@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { AuthzError, type SessionUser } from "@/lib/auth/authz-error";
-import { authenticateAgent, completeFragment, failFragment, failInput, heartbeat, heartbeatInput, leaseFragment } from "@/lib/coordinator/agent";
+import { authenticateAgent, completeFragment, failFragment, failInput, heartbeat, heartbeatInput, leaseFragment, parsePowerHeaders } from "@/lib/coordinator/agent";
 import { CoordinatorError } from "@/lib/coordinator/errors";
 import { cancelQuote, confirmJob, getJob, listJobs, openResults, quoteJob, quoteRequest, textQuoteRequest } from "@/lib/coordinator/jobs";
 import { getNode, listNodes, registerNode, registerNodeInput, revokeNode, rotateNodeToken, updateNode, updateNodeInput } from "@/lib/coordinator/nodes";
@@ -334,6 +334,7 @@ export function completeHandler(req: Request, d: Deps, fragmentId: string): Prom
       now: d.now(),
       dataKey: d.keys.dataKey,
       ipSecret: d.ipSecret,
+      power: parsePowerHeaders(req.headers),
     });
     return json(reply);
   });

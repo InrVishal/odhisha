@@ -149,6 +149,8 @@ export const nodes = pgTable(
     defaultWatts: integer("default_watts").notNull(),
     /** Rolling average from nvidia-smi telemetry. Used for pricing once set. */
     measuredWatts: integer("measured_watts"),
+    /** True when the reported watts are a declared estimate (CPU mode, no nvidia-smi). */
+    wattsEstimated: boolean("watts_estimated").notNull().default(false),
     benchmarkScore: integer("benchmark_score"),
     /** 0..1000. New nodes start in the middle and move with verification results. */
     trustScore: integer("trust_score").notNull().default(500),

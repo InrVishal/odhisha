@@ -1,0 +1,42 @@
+# Builds the whitelisted workload images and pushes them to GHCR.
+# Agents only ever run these by digest: after a build, copy the digests from
+# the job summary into agent/src/nightshift_agent/trust.py (WHITELIST) and
+# lib/coordinator/workloads.ts (WORKLOADS[*].image). A test checks the two match.
+name: Workload images
+on:
+  push:
+    paths: ["agent/workloads/**", ".github/workflows/images.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    name: Build ${{ matrix.workload }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        workload: [text_embeddings, image_resize, image_captioning]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build
+        env:
+          W: ${{ matrix.workload }}
+        run: |
+          name="ghcr.io/inrvishal/nightshift-${W//_/-}"
+          echo "IMAGE=$name" >> "$GITHUB_ENV"
+          docker build --pull -t "$name:$GITHUB_SHA" "agent/workloads/$W"
+      - name: Push and record the digest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          W: ${{ matrix.workload }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE:$GITHUB_SHA"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$GITHUB_SHA")
+          echo "### $W" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "$W=$digest"

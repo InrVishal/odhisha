@@ -1,10 +1,9 @@
 import type { MetadataRoute } from "next";
 import { allPages } from "@/content/site";
+import { siteUrl } from "@/lib/site-url";
 
 function base(): string {
-  if (process.env.SITE_URL) return process.env.SITE_URL;
-  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
-  return "http://localhost:3000";
+  return siteUrl().origin;
 }
 
 export default function robots(): MetadataRoute.Robots {
