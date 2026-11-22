@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { EnvError, findLeakedPublicSecrets, parseEnv, resolveAppEnv } from "@/lib/env";
 
@@ -10,6 +11,9 @@ const devEnv = {
   CRON_SECRET: SECRET,
 };
 
+const ED25519 = generateKeyPairSync("ed25519").privateKey.export({ format: "der", type: "pkcs8" }).toString("base64");
+const DATA_KEY = Buffer.alloc(32, 7).toString("base64");
+
 const prodEnv = {
   VERCEL_ENV: "production",
   NODE_ENV: "production",
@@ -21,6 +25,8 @@ const prodEnv = {
   RATE_LIMIT_BACKEND: "upstash",
   UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
   UPSTASH_REDIS_REST_TOKEN: "tok",
+  COORDINATOR_SIGNING_KEY: ED25519,
+  DATA_ENCRYPTION_KEY: DATA_KEY,
 };
 
 function issuesOf(source: Record<string, string | undefined>): string[] {
@@ -81,6 +87,22 @@ describe("parseEnv", () => {
     expect(env.AUTH_GOOGLE_ID).toBeUndefined();
   });
 
+  it("requires both coordinator keys in preview and production, not in dev", () => {
+    const noKeys: Record<string, string | undefined> = { ...prodEnv, COORDINATOR_SIGNING_KEY: undefined, DATA_ENCRYPTION_KEY: undefined };
+    const issues = issuesOf(noKeys).join();
+    expect(issues).toMatch(/COORDINATOR_SIGNING_KEY: required/);
+    expect(issues).toMatch(/DATA_ENCRYPTION_KEY: required/);
+    expect(issuesOf({ ...noKeys, VERCEL_ENV: "preview" }).join()).toMatch(/COORDINATOR_SIGNING_KEY/);
+    expect(() => parseEnv(devEnv)).not.toThrow();
+  });
+
+  it("accepts only an Ed25519 PKCS#8 key for COORDINATOR_SIGNING_KEY", () => {
+    const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ format: "der", type: "pkcs8" }).toString("base64");
+    expect(() => parseEnv({ ...devEnv, COORDINATOR_SIGNING_KEY: ED25519 })).not.toThrow();
+    expect(issuesOf({ ...devEnv, COORDINATOR_SIGNING_KEY: rsa }).join()).toMatch(/Ed25519/);
+    expect(issuesOf({ ...devEnv, COORDINATOR_SIGNING_KEY: Buffer.from("not a key").toString("base64") }).join()).toMatch(/Ed25519/);
+  });
+
   it("checks DATA_ENCRYPTION_KEY is exactly 32 bytes", () => {
     expect(() => parseEnv({ ...devEnv, DATA_ENCRYPTION_KEY: Buffer.alloc(32).toString("base64") })).not.toThrow();
     expect(issuesOf({ ...devEnv, DATA_ENCRYPTION_KEY: Buffer.alloc(16).toString("base64") }).join()).toMatch(
@@ -123,6 +145,8 @@ describe("deployed defaults and Vercel Marketplace names", () => {
       AUTH_RESEND_KEY: "re_k",
       KV_REST_API_URL: "https://example.upstash.io",
       KV_REST_API_TOKEN: "tok",
+      COORDINATOR_SIGNING_KEY: ED25519,
+      DATA_ENCRYPTION_KEY: DATA_KEY,
     });
     expect(env.EMAIL_TRANSPORT).toBe("resend");
     expect(env.RATE_LIMIT_BACKEND).toBe("upstash");

@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  customType,
   bigserial,
   boolean,
   check,
@@ -29,6 +30,13 @@ import type { AdapterAccountType } from "next-auth/adapters";
  * - Users are never hard-deleted (ledger rows reference them). Account
  *   deletion scrubs personal fields and sets `deletedAt`.
  */
+
+/** Raw bytes. Every driver hands back a Buffer or a Uint8Array; normalise to Buffer. */
+const bytea = customType<{ data: Buffer; driverData: Buffer | Uint8Array }>({
+  dataType: () => "bytea",
+  toDriver: (v) => v,
+  fromDriver: (v) => Buffer.from(v),
+});
 
 const createdAt = () => timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow();
 
@@ -200,8 +208,18 @@ export const jobs = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
     workloadType: workloadType("workload_type").notNull(),
+    /** Node class the job was quoted for. Only nodes of this class run it. */
+    gpuClass: gpuClass("gpu_class").notNull(),
     /** Validated parameters for the workload. Never code. */
     params: jsonb("params").notNull(),
+    itemCount: integer("item_count").notNull(),
+    /**
+     * Price cap from the quote: a node may run this job only if its
+     * watts × tariff and its rate are no higher than these, so what owners
+     * are paid can never exceed what the buyer was quoted.
+     */
+    maxWattTariff: integer("max_watt_tariff").notNull(),
+    maxOwnerRate: integer("max_owner_rate").notNull(),
     status: jobStatus("status").notNull().default("quoted"),
     pricePaise: bigint("price_paise", { mode: "number" }).notNull(),
     /** Pricing breakdown as returned by lib/pricing (all paise). */
@@ -210,6 +228,8 @@ export const jobs = pgTable(
     quoteExpiresAt: timestamp("quote_expires_at", { withTimezone: true, mode: "date" }).notNull(),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true, mode: "date" }),
     completedAt: timestamp("completed_at", { withTimezone: true, mode: "date" }),
+    /** Set when the full price was refunded (deadline missed or job failed). */
+    refundedAt: timestamp("refunded_at", { withTimezone: true, mode: "date" }),
     fragmentCount: integer("fragment_count").notNull().default(0),
     /** Inputs and outputs are deleted after this time (default: 7 days). */
     purgeAfter: timestamp("purge_after", { withTimezone: true, mode: "date" }),
@@ -220,6 +240,7 @@ export const jobs = pgTable(
     index("job_buyer_idx").on(t.buyerId),
     index("job_status_deadline_idx").on(t.status, t.deadlineAt),
     check("job_price_nonnegative", sql`${t.pricePaise} >= 0`),
+    check("job_items_positive", sql`${t.itemCount} > 0`),
   ],
 );
 
@@ -235,8 +256,12 @@ export const fragments = pgTable(
     /** For verification and backup runs: the primary fragment they shadow. */
     parentFragmentId: uuid("parent_fragment_id"),
     status: fragmentStatus("status").notNull().default("pending"),
+    /** GPU-seconds this fragment was priced at, on the job's node class. */
     estGpuSeconds: integer("est_gpu_seconds").notNull(),
+    itemCount: integer("item_count").notNull(),
     inputKey: varchar("input_key", { length: 128 }).notNull(),
+    /** sha256 of the plaintext input, signed into the task so agents can check it. */
+    inputSha256: varchar("input_sha256", { length: 64 }).notNull(),
     outputKey: varchar("output_key", { length: 128 }),
     outputDigest: varchar("output_digest", { length: 64 }),
     /** Per-fragment AES-256-GCM data key, wrapped with DATA_ENCRYPTION_KEY. */
@@ -245,6 +270,8 @@ export const fragments = pgTable(
     maxAttempts: integer("max_attempts").notNull().default(3),
     leaseNodeId: uuid("lease_node_id").references(() => nodes.id, { onDelete: "set null" }),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true, mode: "date" }),
+    /** Expected run time on the leasing node, for spotting slow fragments. */
+    leaseExpectedSec: integer("lease_expected_sec"),
     completedByNodeId: uuid("completed_by_node_id").references(() => nodes.id, { onDelete: "set null" }),
     startedAt: timestamp("started_at", { withTimezone: true, mode: "date" }),
     completedAt: timestamp("completed_at", { withTimezone: true, mode: "date" }),
@@ -258,6 +285,35 @@ export const fragments = pgTable(
     check("fragment_est_positive", sql`${t.estGpuSeconds} > 0`),
   ],
 );
+
+/**
+ * Encrypted job data (fragment inputs and outputs). Kept in Postgres so the
+ * prototype needs no extra storage service. Every value is AES-256-GCM sealed
+ * under its fragment's own data key (lib/security/envelope.ts). Keys are
+ * random, so they reveal nothing. Rows are deleted when the job is purged.
+ */
+export const blobs = pgTable(
+  "blob",
+  {
+    key: varchar("key", { length: 64 }).primaryKey(),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    data: bytea("data").notNull(),
+    bytes: integer("bytes").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("blob_job_idx").on(t.jobId)],
+);
+
+/**
+ * Cross-instance locks with an expiry. The scheduler tick takes one so that
+ * cron and agent polls never run it twice at once.
+ */
+export const locks = pgTable("lock", {
+  name: varchar("name", { length: 64 }).primaryKey(),
+  lockedUntil: timestamp("locked_until", { withTimezone: true, mode: "date" }).notNull(),
+});
 
 // ─── Append-only ledgers ───────────────────────────────────────────────────
 

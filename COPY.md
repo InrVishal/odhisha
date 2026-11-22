@@ -12,16 +12,18 @@ The copy describes the finished prototype. Each phase ticks off what it delivers
 - [x] **Phase 2:** Default owner rate ₹25/hr; all-in price per GPU-hour shown on the pricing page (proof: `tests/unit/pricing.test.ts, tests/e2e/site.spec.ts`)
 - [x] **Phase 2:** Time-Bank maths: credits in standard GPU-hours (RTX 3060 = 1), weighted by benchmark, capped at 10×, rounding never creates credit (proof: `tests/unit/timebank.test.ts`)
 - [x] **Phase 2:** Waitlist only used to email about NightShift; same reply for new and existing emails (proof: `tests/integration/waitlist.test.ts, tests/e2e/site.spec.ts`)
-- [ ] **Phase 3:** Quote shows price and finish time before confirming; ₹0 if the job is late, refund shown on the invoice automatically
-- [ ] **Phase 3:** Owners are still paid for finished work when a job is late; NightShift takes the loss
-- [ ] **Phase 3:** Pieces from offline PCs are re-assigned; a backup copy starts when a piece runs slow near the deadline
-- [ ] **Phase 3:** Job data encrypted when stored; inputs and results deleted after 7 days
-- [ ] **Phase 3:** Measured watts replace the class default once a node reports them; owners can set their own tariff and rate
+- [x] **Phase 3:** Quote shows price and finish time before confirming; ₹0 if the job is late, refunded automatically (proof: `tests/integration/coordinator.test.ts (lifecycle, deadline guarantee)`)
+- [x] **Phase 3:** Owners are still paid for finished work when a job is late; NightShift takes the loss (proof: `tests/integration/coordinator.test.ts (deadline guarantee)`)
+- [x] **Phase 3:** Pieces from offline PCs are re-assigned; a backup copy starts when a piece runs slow near the deadline (proof: `tests/integration/coordinator.test.ts (timeouts, backups), tests/unit/scheduler.test.ts`)
+- [x] **Phase 3:** Job data encrypted when stored; inputs and results deleted after 7 days (proof: `tests/unit/crypto.test.ts, tests/integration/coordinator.test.ts (data at rest and retention)`)
+- [x] **Phase 3:** Measured watts replace the class default once a node reports them; owners can set their own tariff and rate (proof: `tests/integration/coordinator.test.ts, tests/unit/scheduler.test.ts`)
+- [x] **Phase 3:** Owner payouts can never add up to more than the buyer's quote (proof: `tests/unit/scheduler.test.ts (property test)`)
 - [ ] **Phase 4:** The app asks for work (no inbound ports), stops outside the night window and on pause
 - [ ] **Phase 4:** Every task signed by us and checked by the app; unsigned tasks refused
 - [ ] **Phase 4:** Locked container: no internet, no file access, memory and time limits, deleted after each piece
 - [ ] **Phase 4:** Benchmark on join, normalised so an RTX 3060 scores 1000 (Time-Bank weighting depends on it)
 - [ ] **Phase 4:** CPU mode for laptops without an NVIDIA GPU
+- [ ] **Phase 5:** Invoices (PDF) show the deadline refund line automatically
 - [ ] **Phase 5:** Owner earnings show electricity as its own line; owners see every piece their PC ran
 - [ ] **Phase 5:** Dashboard: download your data and delete your account; ledger keeps records without your email
 - [ ] **Phase 6:** About 1 piece in 10 re-run on a second PC; trust scores; bad PCs paused
@@ -30,7 +32,7 @@ The copy describes the finished prototype. Each phase ticks off what it delivers
 - [ ] **Phase 7:** GPU-on-EMI simulator (demo only, no lending)
 - [ ] **Phase 8:** Sentry error reports with personal details removed
 
-Done: 4 of 21.
+Done: 10 of 23.
 
 **Still open from you:** set `CONTACT_EMAIL` in Vercel so the privacy page can show a real address.
 

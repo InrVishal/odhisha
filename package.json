@@ -19,7 +19,8 @@
     "copy:export": "tsx scripts/export-copy.ts",
     "copy:check": "tsx scripts/check-copy.ts",
     "test:e2e": "playwright test",
-    "test:a11y": "playwright test tests/e2e/a11y.spec.ts"
+    "test:a11y": "playwright test tests/e2e/a11y.spec.ts",
+    "demo:lifecycle": "tsx scripts/demo-lifecycle.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "1.11.3",
