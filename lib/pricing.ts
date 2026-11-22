@@ -43,14 +43,11 @@ export const DEFAULT_VERIFICATION_BUFFER_BPS = 1200;
 export const DEFAULT_FEE_BPS = 2500;
 
 /**
- * Example owner rates for the calculator only. Every owner sets their own
- * rate on their node; these are not promises of earnings.
+ * Default owner rate: ₹25 per GPU-hour, on top of electricity. New nodes
+ * start here (DB default in migration 0002) and owners can change it. Not a
+ * promise of earnings: owners only earn when there are jobs.
  */
-export const EXAMPLE_OWNER_RATE_PAISE_PER_HR: Readonly<Record<GpuClass, number>> = Object.freeze({
-  rtx3060: 1500,
-  rtx4070: 2500,
-  rtx4090: 4500,
-});
+export const DEFAULT_OWNER_RATE_PAISE_PER_HR = 2500;
 
 export interface FragmentPricingInput {
   /** GPU time for this fragment, in whole seconds. */
@@ -163,6 +160,28 @@ export function priceJob(fragments: readonly FragmentPricingInput[], options: Pr
     totalPaise: toNumber(total),
     gpuSeconds: toNumber(gpuSeconds),
   };
+}
+
+/**
+ * All-in price of one GPU-hour, in paise: electricity + owner rate, plus the
+ * verification buffer, plus the fee, each rounded up to the paisa exactly as
+ * priceJob does. It leaves out only the job-level round-up to the next rupee,
+ * so a job of N hours costs N × this, rounded up (within a few paise).
+ */
+export function allInPerGpuHourPaise(
+  watts: number,
+  tariffPaisePerKwh: number,
+  ownerRatePaisePerHr: number,
+  options: PricingOptions = {},
+): number {
+  const bufferBps = options.verificationBufferBps ?? DEFAULT_VERIFICATION_BUFFER_BPS;
+  const feeBps = options.feeBps ?? DEFAULT_FEE_BPS;
+  checkInt("verificationBufferBps", bufferBps, 0, LIMITS.maxBps);
+  checkInt("feeBps", feeBps, 0, LIMITS.maxBps);
+  checkInt("ownerRatePaisePerHr", ownerRatePaisePerHr, 0, LIMITS.maxOwnerRatePaisePerHr);
+  const cost = BigInt(powerCostPerHourPaise(watts, tariffPaisePerKwh) + ownerRatePaisePerHr);
+  const buffered = cost + ceilDiv(cost * BigInt(bufferBps), BPS);
+  return toNumber(buffered + ceilDiv(buffered * BigInt(feeBps), BPS));
 }
 
 /** Electricity cost of one hour of work, in paise (exact, rounded up). */

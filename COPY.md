@@ -4,29 +4,42 @@ Every word on the public site, in one place. **Generated from `content/site.ts`*
 
 Numbers such as ₹3.15 and the sample quote are computed by the pricing engine (`content/derived.ts`), not typed by hand.
 
-## Things the copy promises that later phases must build
+## Promises checklist
 
-The copy describes the finished prototype. These promises are checked off as each phase ships:
+The copy describes the finished prototype. Each phase ticks off what it delivers, with the test that proves it (source: `content/promises.ts`).
 
-- Agent polls for work (no inbound ports), stops outside the night window and on pause (phase 4)
-- Tasks signed by us and checked by the agent; locked container: no internet, no file access, memory and time limits (phase 4)
-- About 1 piece in 10 re-run on a second PC; trust scores; pausing bad PCs (phase 6)
-- Re-assign pieces from offline PCs; backup copy near the deadline; ₹0 if late with owners still paid (phase 3)
-- Job data encrypted when stored; inputs and results deleted after 7 days (phase 3)
-- Owner earnings with electricity as its own line; own tariff; measured watts used once reported (phases 3 and 5)
-- Dashboard: data download and account deletion (phase 5)
-- Time-Bank: 1 credit-hour per hour worked, same GPU class; credits can't be cashed out (phase 7)
-- EMI simulator (phase 7)
-- Sentry with personal details removed (phase 8)
+- [x] **Phase 2:** Prices follow the published formula in whole paise; electricity is covered first; breakdown lines add up to the total (proof: `tests/unit/pricing.test.ts`)
+- [x] **Phase 2:** Default owner rate ₹25/hr; all-in price per GPU-hour shown on the pricing page (proof: `tests/unit/pricing.test.ts, tests/e2e/site.spec.ts`)
+- [x] **Phase 2:** Time-Bank maths: credits in standard GPU-hours (RTX 3060 = 1), weighted by benchmark, capped at 10×, rounding never creates credit (proof: `tests/unit/timebank.test.ts`)
+- [x] **Phase 2:** Waitlist only used to email about NightShift; same reply for new and existing emails (proof: `tests/integration/waitlist.test.ts, tests/e2e/site.spec.ts`)
+- [ ] **Phase 3:** Quote shows price and finish time before confirming; ₹0 if the job is late, refund shown on the invoice automatically
+- [ ] **Phase 3:** Owners are still paid for finished work when a job is late; NightShift takes the loss
+- [ ] **Phase 3:** Pieces from offline PCs are re-assigned; a backup copy starts when a piece runs slow near the deadline
+- [ ] **Phase 3:** Job data encrypted when stored; inputs and results deleted after 7 days
+- [ ] **Phase 3:** Measured watts replace the class default once a node reports them; owners can set their own tariff and rate
+- [ ] **Phase 4:** The app asks for work (no inbound ports), stops outside the night window and on pause
+- [ ] **Phase 4:** Every task signed by us and checked by the app; unsigned tasks refused
+- [ ] **Phase 4:** Locked container: no internet, no file access, memory and time limits, deleted after each piece
+- [ ] **Phase 4:** Benchmark on join, normalised so an RTX 3060 scores 1000 (Time-Bank weighting depends on it)
+- [ ] **Phase 4:** CPU mode for laptops without an NVIDIA GPU
+- [ ] **Phase 5:** Owner earnings show electricity as its own line; owners see every piece their PC ran
+- [ ] **Phase 5:** Dashboard: download your data and delete your account; ledger keeps records without your email
+- [ ] **Phase 6:** About 1 piece in 10 re-run on a second PC; trust scores; bad PCs paused
+- [ ] **Phase 6:** Only work that passes checks earns Time-Bank credits
+- [ ] **Phase 7:** Time-Bank wallet (demo): earn and spend credits; no cash-out, sale or transfer
+- [ ] **Phase 7:** GPU-on-EMI simulator (demo only, no lending)
+- [ ] **Phase 8:** Sentry error reports with personal details removed
 
-**Please confirm:** the "student team from Hyderabad" line, the Time-Bank 1:1 rule, "credits can't be cashed out", and set `CONTACT_EMAIL` so the privacy page can show a real address.
+Done: 4 of 21.
+
+**Still open from you:** set `CONTACT_EMAIL` in Vercel so the privacy page can show a real address.
 
 ---
 
 ## Everywhere
 
 - Demo banner: This is a working prototype. Payments, payouts and EMI are simulated (demo mode). No real money moves.
-- Footer: Idle GPUs, pooled overnight for AI jobs. / Built by a small student team from Hyderabad. / Demo mode: payments, UPI payouts and GPU EMI are simulated.
+- Footer: Idle GPUs, pooled overnight for AI jobs. / Built by a small student team in India. / Demo mode: payments, UPI payouts and GPU EMI are simulated.
 - When no contact email is set: We'll add a contact email before public launch.
 
 ## Home (`/`)
@@ -41,9 +54,9 @@ Buttons: "Join the waitlist", "See how pricing works"
 
 ### Four things we do differently
 
-- **A fixed price and a finish time, up front.** You see the full price and the time it will be done before you confirm. Sample quote: 10 GPU-hours on RTX 4070 PCs at an example owner rate of ₹25 an hour comes to ₹395, done by 6:00 AM. If the job isn't done by then, you pay ₹0.
+- **A fixed price and a finish time, up front.** You see the full price and the time it will be done before you confirm. Sample quote: 14 GPU-hours on RTX 4070 PCs at our default owner rate of ₹25 an hour comes to ₹552, done by 6:00 AM. If the job isn't done by then, you pay ₹0.
 - **The owner's electricity is paid first.** Every price covers the power bill before anything else. At ₹9 a unit, an RTX 4070 PC uses about ₹3.15 of electricity an hour. The owner gets that on top of their own rate.
-- **Time-Bank for students.** Your hostel PC works through the night and earns credit-hours. In hackathon or exam week, spend them on several GPUs at once.
+- **Time-Bank for students.** Your hostel PC works through the night and earns credits. In hackathon or exam week, spend them on several GPUs at once.
 - **GPU on EMI, as a simulator.** See how a new GPU's earnings on the network could pay off its EMI month by month. It's a demo. We don't lend money.
 
 ### How a night on NightShift goes
@@ -56,7 +69,7 @@ Buttons: "Join the waitlist", "See how pricing works"
 
 ### Who is building this
 
-We're a small student team from Hyderabad. Most of us have a gaming PC that does nothing from midnight to morning, and friends who pay too much for cloud GPUs.
+We're a small student team in India. Most of us have a gaming PC that does nothing from midnight to morning, and friends who pay too much for cloud GPUs.
 
 NightShift is a prototype. We test it on our own machines first. Nothing on this site is a user count, a testimonial or a partner logo, because we don't have those yet.
 
@@ -166,7 +179,7 @@ You choose a job type and its settings, then upload your files. You can't send s
 
 ### The quote
 
-Before you confirm, you see the total and every line in it: the owners' pay, their electricity, the verification buffer and our fee. Sample quote: 10 GPU-hours on RTX 4070 PCs at an example owner rate of ₹25 an hour comes to ₹395, done by 6:00 AM.
+Before you confirm, you see the total and every line in it: the owners' pay, their electricity, the verification buffer and our fee. Sample quote: 14 GPU-hours on RTX 4070 PCs at our default owner rate of ₹25 an hour comes to ₹552, done by 6:00 AM.
 
 Miss the finish time and the job is free. The refund shows up on your invoice without you asking.
 
@@ -194,15 +207,23 @@ We start with the owner's electricity, add their hourly rate, add 12% to pay for
 
 ### Try it
 
-Owner rates here are examples. Each owner sets their own. Payments are simulated in this prototype.
+Owners start at our default rate of ₹25 an hour, and each owner can set their own. Payments are simulated in this prototype.
 
-Calculator labels: GPU class; GPU hours (Total GPU time across all pieces of the job.); Electricity tariff (₹ per unit) (₹9 is our default. Use your own if you know it.); Owner's rate (₹ per hour) (Example rate for this GPU class.)
+Calculator labels: GPU class; GPU hours (Total GPU time across all pieces of the job.); Electricity tariff (₹ per unit) (₹9 is our default. Use your own if you know it.); Owner's rate (₹ per hour) (₹25 is our default. Owners can change it.)
 
 Breakdown lines: Owner's pay / Owner's electricity / Verification buffer (12%) / NightShift fee (25%, plus round-up) / Total you pay
 
-Under the breakdown: The owner receives {ownerReceives}, and {electricity} of that is their electricity.
+Under the breakdown: The owner receives {ownerReceives}, and {electricity} of that is their electricity. That's {perHour} per GPU-hour, all in.
 
 Errors: Enter hours as a number, like 10 or 2.5. / Enter rupees as a number, like 9 or 9.50. / That number is outside what the calculator handles.
+
+### All-in price per GPU-hour
+
+What one GPU-hour costs you with everything included: the owner's rate (₹25), their electricity at ₹9 a unit, the 12% verification buffer and our 25% fee.
+
+RTX 3060 PC ₹39.04, RTX 4070 PC ₹39.42, RTX 4090 PC ₹42.57 per GPU-hour, all in.
+
+A job's total is this rate × its GPU-hours, rounded up to the next rupee. For example, 14 GPU-hours on an RTX 4070 PC comes to ₹552.
 
 ### The formula
 
@@ -226,7 +247,7 @@ These are whole-PC numbers while the GPU is busy. Once the app measures your rea
 
 ## Time-Bank (`/time-bank`)
 
-_Search description:_ Students lend their GPU at night and earn credit-hours to spend on several GPUs at once later.
+_Search description:_ Students lend their GPU at night and earn credits, in standard GPU-hours, to spend on several GPUs at once later.
 
 # Lend your GPU now, borrow several later
 
@@ -234,17 +255,23 @@ Time-Bank is for students. Your PC works for the network at night and earns cred
 
 ### Earning credits
 
-Every hour your PC works for the network earns one credit-hour for the same GPU class. Your hostel RTX 3060 running from midnight to 6 AM earns 6 RTX 3060 credit-hours.
+Credits are counted in standard GPU-hours. One standard GPU-hour is one hour of work on an RTX 3060.
+
+Faster GPUs earn more per hour. When your PC joins, the app runs a short benchmark, and your credits are weighted by that score compared with an RTX 3060. For example, a GPU that benchmarks twice as fast earns 2 standard GPU-hours for each hour it works.
+
+Your hostel RTX 3060 running from midnight to 6 AM earns 6 standard GPU-hours.
 
 ### Spending credits
 
-When you need a lot of compute at once, book a temporary cluster. For example, 4 GPUs for 3 hours during a hackathon uses 12 credit-hours.
+When you need a lot of compute at once, book a temporary cluster. Spending uses the same weights: for example, 4 RTX 3060-class GPUs for 3 hours during a hackathon cost 12 standard GPU-hours. Faster GPUs in your cluster cost more per hour.
 
 Your booking runs on the same approved job types as everyone else's.
 
 ### The rules
 
-Credits aren't money. You can't cash them out or sell them.
+Credits aren't money. You can't cash them out, sell them or give them to someone else.
+
+One GPU can earn at most 10 standard GPU-hours per hour, however high its benchmark.
 
 In this prototype, credits are tracked in a demo wallet.
 

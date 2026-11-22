@@ -4,16 +4,17 @@ import { isRemote, useFreshIp, writeTestsInOneBrowserWhenRemote } from "./helper
 test("pricing calculator shows the full breakdown, electricity included", async ({ page }) => {
   await page.goto("/pricing");
   const out = page.locator("output");
-  // Defaults: RTX 4070 PC, 10 hours, ₹9/unit, ₹25/hr → ₹395 (see tests/unit/pricing.test.ts).
-  await expect(out).toContainText("₹395");
+  // Defaults: RTX 4070 PC, 14 hours, ₹9/unit, ₹25/hr → ₹552 (see tests/unit/pricing.test.ts).
+  await expect(out).toContainText("₹552");
   await expect(out).toContainText("Owner's electricity");
-  await expect(out).toContainText("₹31.50");
+  await expect(out).toContainText("₹44.10");
   await expect(out).toContainText("Verification buffer (12%)");
-  await expect(out).toContainText("₹33.78");
-  await expect(out).toContainText("The owner receives ₹281.50, and ₹31.50 of that is their electricity.");
+  await expect(out).toContainText("₹47.30");
+  await expect(out).toContainText("The owner receives ₹394.10, and ₹44.10 of that is their electricity.");
+  await expect(out).toContainText("That's ₹39.42 per GPU-hour, all in.");
 
   await page.getByLabel("Electricity tariff (₹ per unit)").fill("12");
-  await expect(out).toContainText("₹42"); // 0.35 kW × 10 h × ₹12
+  await expect(out).toContainText("₹58.80"); // 0.35 kW × 14 h × ₹12
 
   await page.getByLabel("GPU hours").fill("abc");
   await expect(out).toContainText("Enter hours as a number");
@@ -22,7 +23,16 @@ test("pricing calculator shows the full breakdown, electricity included", async 
 test("home page shows the demo-mode banner and a computed sample quote", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("Payments, payouts and EMI are simulated (demo mode)")).toBeVisible();
-  await expect(page.getByText(/Sample quote: .*₹395, done by 6:00 AM/)).toBeVisible();
+  await expect(page.getByText(/Sample quote: 14 GPU-hours on RTX 4070 PCs .*₹552, done by 6:00 AM/)).toBeVisible();
+});
+
+test("pricing page shows the all-in price per GPU-hour for each PC", async ({ page }) => {
+  await page.goto("/pricing");
+  const table = page.getByRole("table").filter({ hasText: "All-in per GPU-hour" });
+  await expect(table.getByRole("row", { name: /RTX 3060 PC/ })).toContainText("₹39.04");
+  await expect(table.getByRole("row", { name: /RTX 4070 PC/ })).toContainText("₹39.42");
+  await expect(table.getByRole("row", { name: /RTX 4090 PC/ })).toContainText("₹42.57");
+  await expect(page.getByText("14 GPU-hours on an RTX 4070 PC comes to ₹552")).toBeVisible();
 });
 
 test("waitlist gives the same answer for a repeat signup", async ({ page, browserName }) => {

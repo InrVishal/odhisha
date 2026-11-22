@@ -47,7 +47,9 @@ test.describe("keyboard only", () => {
     await page.keyboard.press("Shift+Tab");
     await expect(page.getByLabel("GPU class")).toBeFocused();
     await page.keyboard.press("ArrowDown"); // RTX 4070 → RTX 4090
-    await expect(page.getByLabel("Owner's rate (₹ per hour)")).toHaveValue("45");
+    // 20 h on a 0.60 kW PC: ₹108 power + ₹500 owner pay → +12% → +25% → ₹852
+    await expect(page.locator("output")).toContainText("₹852");
+    await expect(page.getByLabel("Owner's rate (₹ per hour)")).toHaveValue("25");
   });
 
   test("the waitlist form can be filled and sent with the keyboard", async ({ page, browserName }) => {

@@ -76,7 +76,7 @@ describe("site copy", () => {
 
   it("every {placeholder} has a value", () => {
     for (const { path, text } of strings) {
-      if (text.includes("{contact}") || text.includes("{email}") || text.includes("{ownerReceives}")) continue;
+      if (/{(contact|email|ownerReceives|perHour)}/.test(text)) continue; // filled at runtime
       expect(() => fill(text), path).not.toThrow();
     }
   });
@@ -89,20 +89,39 @@ describe("site copy", () => {
     expect(copyValues.power4070).toBe("₹3.15");
     expect(copyValues.power3060).toBe("₹2.88");
     expect(copyValues.power4090).toBe("₹5.40");
-    expect(copyValues.sampleQuote).toContain("₹395");
+    expect(copyValues.sampleQuote).toMatch(/^14 GPU-hours on RTX 4070 PCs .* ₹25 an hour comes to ₹552/);
+    expect(copyValues.perHour4070).toBe("₹39.42");
+    expect(copyValues.tbHostel).toBe("6 standard GPU-hours");
+    expect(copyValues.tbDouble).toBe("2 standard GPU-hours");
+    expect(copyValues.tbCluster).toBe("12 standard GPU-hours");
     expect(copyValues.sampleQuote).toContain("6:00 AM");
   });
 
   it("marks examples as examples", () => {
     expect(content.home.pillars[0]!.body).toMatch(/Sample quote/);
     expect(content.builders.sections.find((s) => s.heading === "The quote")!.body[0]).toMatch(/Sample quote/);
-    expect(content.pricing.calculatorNote).toMatch(/examples/);
+    expect(content.timeBank.sections[0]!.body.join(" ")).toMatch(/For example/);
+    expect(content.timeBank.sections[1]!.body.join(" ")).toMatch(/for example/);
   });
 
   it("says demo mode where money is involved", () => {
     expect(content.site.demoBanner).toMatch(/simulated/);
     expect(content.owners.sections.find((s) => s.heading === "Getting paid")!.body.join(" ")).toMatch(/simulated/);
     expect(content.pricing.calculatorNote).toMatch(/simulated/);
+  });
+
+  it("says Time-Bank credits are standard GPU-hours, benchmark-weighted, and not cashable", () => {
+    const tb = content.timeBank.sections.flatMap((s) => s.body).join(" ");
+    expect(tb).toMatch(/standard GPU-hours/);
+    expect(tb).toMatch(/One standard GPU-hour is one hour of work on an RTX 3060/);
+    expect(tb).toMatch(/benchmark/);
+    expect(tb).toMatch(/can.t cash them out/);
+    expect(tb).not.toMatch(/credit-hour/);
+  });
+
+  it("names the team without a city", () => {
+    expect(content.site.footer.team).toBe("Built by a small student team in India.");
+    expect(strings.map((s) => s.text).join(" ")).not.toMatch(/Hyderabad/);
   });
 
   it("makes no social-proof claims", () => {

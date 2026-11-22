@@ -39,7 +39,7 @@ export const site = {
   tagline: "Idle GPUs, pooled overnight for AI jobs.",
   demoBanner: "This is a working prototype. Payments, payouts and EMI are simulated (demo mode). No real money moves.",
   footer: {
-    team: "Built by a small student team from Hyderabad.",
+    team: "Built by a small student team in India.",
     demo: "Demo mode: payments, UPI payouts and GPU EMI are simulated.",
     contactMissing: "We'll add a contact email before public launch.",
   },
@@ -52,7 +52,7 @@ export const nav: PageMeta[] = [
   { path: "/owners", name: "For GPU owners", description: "Let your gaming PC, cyber café or college lab earn at night. You set the hours and the rate. Electricity is paid on top." },
   { path: "/builders", name: "For AI builders", description: "Batch embeddings and image jobs at a fixed price with a finish time. Miss the time and you pay ₹0." },
   { path: "/pricing", name: "Pricing", description: "Every line of a NightShift price, with a calculator. Electricity is covered first, then the owner's rate, then our fee." },
-  { path: "/time-bank", name: "Time-Bank", description: "Students lend their GPU at night and earn credit-hours to spend on several GPUs at once later." },
+  { path: "/time-bank", name: "Time-Bank", description: "Students lend their GPU at night and earn credits, in standard GPU-hours, to spend on several GPUs at once later." },
   { path: "/faq", name: "FAQ", description: "Straight answers about safety, payments, deadlines and what runs on your machine." },
 ];
 
@@ -84,7 +84,7 @@ export const home = {
     },
     {
       title: "Time-Bank for students",
-      body: "Your hostel PC works through the night and earns credit-hours. In hackathon or exam week, spend them on several GPUs at once.",
+      body: "Your hostel PC works through the night and earns credits. In hackathon or exam week, spend them on several GPUs at once.",
     },
     {
       title: "GPU on EMI, as a simulator",
@@ -101,7 +101,7 @@ export const home = {
   ] satisfies Step[],
   teamHeading: "Who is building this",
   team: [
-    "We're a small student team from Hyderabad. Most of us have a gaming PC that does nothing from midnight to morning, and friends who pay too much for cloud GPUs.",
+    "We're a small student team in India. Most of us have a gaming PC that does nothing from midnight to morning, and friends who pay too much for cloud GPUs.",
     "NightShift is a prototype. We test it on our own machines first. Nothing on this site is a user count, a testimonial or a partner logo, because we don't have those yet.",
   ],
 };
@@ -275,7 +275,11 @@ export const pricing = {
   drawHeading: "Default power draw",
   drawNote: "These are whole-PC numbers while the GPU is busy. Once the app measures your real draw, we use that.",
   calculatorHeading: "Try it",
-  calculatorNote: "Owner rates here are examples. Each owner sets their own. Payments are simulated in this prototype.",
+  calculatorNote: "Owners start at our default rate of {defaultRate} an hour, and each owner can set their own. Payments are simulated in this prototype.",
+  perHourHeading: "All-in price per GPU-hour",
+  perHourIntro: "What one GPU-hour costs you with everything included: the owner's rate ({defaultRate}), their electricity at ₹9 a unit, the 12% verification buffer and our 25% fee.",
+  perHourNote: "A job's total is this rate × its GPU-hours, rounded up to the next rupee. For example, 14 GPU-hours on an RTX 4070 PC comes to {sample14Total}.",
+  perHourColumns: { pc: "PC", perHour: "All-in per GPU-hour" },
   calculator: {
     gpuLabel: "GPU class",
     hoursLabel: "GPU hours",
@@ -283,7 +287,7 @@ export const pricing = {
     tariffLabel: "Electricity tariff (₹ per unit)",
     tariffHint: "₹9 is our default. Use your own if you know it.",
     rateLabel: "Owner's rate (₹ per hour)",
-    rateHint: "Example rate for this GPU class.",
+    rateHint: "{defaultRate} is our default. Owners can change it.",
     invalidHours: "Enter hours as a number, like 10 or 2.5.",
     invalidRupees: "Enter rupees as a number, like 9 or 9.50.",
     outOfRange: "That number is outside what the calculator handles.",
@@ -296,6 +300,7 @@ export const pricing = {
       total: "Total you pay",
     },
     ownerGets: "The owner receives {ownerReceives}, and {electricity} of that is their electricity.",
+    perHour: "That's {perHour} per GPU-hour, all in.",
   },
   notesHeading: "Things to know",
   notes: [
@@ -315,20 +320,23 @@ export const timeBank = {
     {
       heading: "Earning credits",
       body: [
-        "Every hour your PC works for the network earns one credit-hour for the same GPU class. Your hostel RTX 3060 running from midnight to 6 AM earns 6 RTX 3060 credit-hours.",
+        "Credits are counted in standard GPU-hours. One standard GPU-hour is one hour of work on an RTX 3060.",
+        "Faster GPUs earn more per hour. When your PC joins, the app runs a short benchmark, and your credits are weighted by that score compared with an RTX 3060. For example, a GPU that benchmarks twice as fast earns {tbDouble} for each hour it works.",
+        "Your hostel RTX 3060 running from midnight to 6 AM earns {tbHostel}.",
       ],
     },
     {
       heading: "Spending credits",
       body: [
-        "When you need a lot of compute at once, book a temporary cluster. For example, 4 GPUs for 3 hours during a hackathon uses 12 credit-hours.",
+        "When you need a lot of compute at once, book a temporary cluster. Spending uses the same weights: for example, 4 RTX 3060-class GPUs for 3 hours during a hackathon cost {tbCluster}. Faster GPUs in your cluster cost more per hour.",
         "Your booking runs on the same approved job types as everyone else's.",
       ],
     },
     {
       heading: "The rules",
       body: [
-        "Credits aren't money. You can't cash them out or sell them.",
+        "Credits aren't money. You can't cash them out, sell them or give them to someone else.",
+        "One GPU can earn at most 10 standard GPU-hours per hour, however high its benchmark.",
         "In this prototype, credits are tracked in a demo wallet.",
       ],
     },

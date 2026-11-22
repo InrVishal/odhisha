@@ -1,7 +1,17 @@
 import type { Metadata } from "next";
 import { PageHero } from "@/components/content";
+import { fill } from "@/content/derived";
 import { pricing } from "@/content/site";
-import { DEFAULT_TARIFF_PAISE_PER_KWH, DEFAULT_WATTS, formatPaise, GPU_LABELS, powerCostPerHourPaise, type GpuClass } from "@/lib/pricing";
+import {
+  allInPerGpuHourPaise,
+  DEFAULT_OWNER_RATE_PAISE_PER_HR,
+  DEFAULT_TARIFF_PAISE_PER_KWH,
+  DEFAULT_WATTS,
+  formatPaise,
+  GPU_LABELS,
+  powerCostPerHourPaise,
+  type GpuClass,
+} from "@/lib/pricing";
 import { Calculator } from "./calculator";
 
 export const metadata: Metadata = { title: pricing.meta.name, description: pricing.meta.description };
@@ -15,10 +25,36 @@ export default function PricingPage() {
         <h2 id="try-it" className="text-2xl font-semibold text-lavender">
           {pricing.calculatorHeading}
         </h2>
-        <p className="mt-2 text-mist">{pricing.calculatorNote}</p>
+        <p className="mt-2 text-mist">{fill(pricing.calculatorNote)}</p>
         <div className="mt-5">
           <Calculator />
         </div>
+      </section>
+
+      <section aria-labelledby="per-hour" className="mx-auto mt-14 max-w-5xl px-4 sm:px-6">
+        <h2 id="per-hour" className="text-2xl font-semibold text-lavender">
+          {pricing.perHourHeading}
+        </h2>
+        <p className="mt-2 leading-7 text-mist">{fill(pricing.perHourIntro)}</p>
+        <table className="mt-4 w-full max-w-xl text-left">
+          <thead>
+            <tr className="border-b border-navy text-sm text-mist">
+              <th scope="col" className="py-2 font-medium">{pricing.perHourColumns.pc}</th>
+              <th scope="col" className="py-2 text-right font-medium">{pricing.perHourColumns.perHour}</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-navy">
+            {(Object.keys(GPU_LABELS) as GpuClass[]).map((k) => (
+              <tr key={k}>
+                <th scope="row" className="py-2 font-normal text-lavender">{GPU_LABELS[k]}</th>
+                <td className="py-2 text-right font-mono text-lg text-orange">
+                  {formatPaise(allInPerGpuHourPaise(DEFAULT_WATTS[k], DEFAULT_TARIFF_PAISE_PER_KWH, DEFAULT_OWNER_RATE_PAISE_PER_HR))}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="mt-3 text-sm text-mist">{fill(pricing.perHourNote)}</p>
       </section>
 
       <div className="mx-auto mt-14 grid max-w-5xl gap-10 px-4 sm:px-6 md:grid-cols-2">

@@ -1,7 +1,9 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
+  allInPerGpuHourPaise,
   DEFAULT_FEE_BPS,
+  DEFAULT_OWNER_RATE_PAISE_PER_HR,
   DEFAULT_TARIFF_PAISE_PER_KWH,
   DEFAULT_VERIFICATION_BUFFER_BPS,
   DEFAULT_WATTS,
@@ -263,6 +265,65 @@ describe("parsing and formatting", () => {
         const s = `${Math.floor(p / 100)}.${String(p % 100).padStart(2, "0")}`;
         expect(parseRupeesToPaise(s)).toBe(p);
       }),
+    );
+  });
+});
+
+describe("default owner rate and the deck example", () => {
+  it("defaults owners to ₹25 an hour", () => {
+    expect(DEFAULT_OWNER_RATE_PAISE_PER_HR).toBe(2500);
+  });
+
+  it("14 GPU-hours on an RTX 4070 PC at ₹9/unit and ₹25/hr comes to ₹552", () => {
+    // electricity 0.35 kW × 14 h × ₹9 = ₹44.10; owner pay ₹25 × 14 = ₹350
+    // job cost ₹394.10; buffer 12% = ₹47.30 (47.292 rounded up) → ₹441.40
+    // fee 25% = ₹110.35 → ₹551.75 → rounded up to ₹552; fee line = ₹110.60
+    expect(
+      priceJob([{ gpuSeconds: 14 * 3600, watts: 350, tariffPaisePerKwh: 900, ownerRatePaisePerHr: DEFAULT_OWNER_RATE_PAISE_PER_HR }]),
+    ).toEqual({
+      ownerPayPaise: 35000,
+      electricityPaise: 4410,
+      ownerReceivesPaise: 39410,
+      verificationBufferPaise: 4730,
+      nightshiftFeePaise: 11060,
+      totalPaise: 55200,
+      gpuSeconds: 50400,
+    });
+  });
+});
+
+describe("all-in price per GPU-hour", () => {
+  it("is ₹39.04 / ₹39.42 / ₹42.57 for the three PC classes at the defaults", () => {
+    // RTX 4070: (₹3.15 + ₹25) = ₹28.15 → +12% = ₹31.53 (31.528 up) → +25% = ₹39.42 (39.4125 up)
+    expect(allInPerGpuHourPaise(350, 900, 2500)).toBe(3942);
+    expect(allInPerGpuHourPaise(320, 900, 2500)).toBe(3904);
+    expect(allInPerGpuHourPaise(600, 900, 2500)).toBe(4257);
+  });
+
+  it("validates its inputs like priceJob", () => {
+    expect(() => allInPerGpuHourPaise(350, 900, -1)).toThrow(PricingInputError);
+    expect(() => allInPerGpuHourPaise(0, 900, 2500)).toThrow(PricingInputError);
+    expect(() => allInPerGpuHourPaise(350, 900, 2500, { feeBps: 10_001 })).toThrow(PricingInputError);
+  });
+
+  it("a whole-hour job costs hours × the per-hour price, rounded up to the rupee (within a few paise)", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 720 }),
+        fc.integer({ min: 1, max: LIMITS.maxWatts }),
+        fc.integer({ min: 1, max: LIMITS.maxTariffPaisePerKwh }),
+        fc.integer({ min: 0, max: LIMITS.maxOwnerRatePaisePerHr }),
+        (hours, watts, tariff, rate) => {
+          const perHour = allInPerGpuHourPaise(watts, tariff, rate);
+          const total = priceJob([{ gpuSeconds: hours * 3600, watts, tariffPaisePerKwh: tariff, ownerRatePaisePerHr: rate }]).totalPaise;
+          // Per-hour rounds up once per hour, the job rounds up once overall,
+          // so the job is never more than ₹1 above hours × per-hour, and
+          // never below it by more than the per-hour round-ups (< 4 paise/hr).
+          expect(total).toBeLessThanOrEqual(hours * perHour + 100);
+          expect(total).toBeGreaterThanOrEqual(hours * perHour - 4 * hours);
+        },
+      ),
+      { numRuns: 2000 },
     );
   });
 });

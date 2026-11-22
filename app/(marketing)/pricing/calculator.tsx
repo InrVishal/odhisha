@@ -1,11 +1,13 @@
 "use client";
 
 import { useId, useState } from "react";
+import { fill, SAMPLE_QUOTE_HOURS } from "@/content/derived";
 import { pricing } from "@/content/site";
 import {
+  allInPerGpuHourPaise,
+  DEFAULT_OWNER_RATE_PAISE_PER_HR,
   DEFAULT_TARIFF_PAISE_PER_KWH,
   DEFAULT_WATTS,
-  EXAMPLE_OWNER_RATE_PAISE_PER_HR,
   formatPaise,
   GPU_LABELS,
   parseHoursToSeconds,
@@ -23,7 +25,7 @@ function paiseToInput(p: number): string {
   return p % 100 === 0 ? String(p / 100) : `${Math.floor(p / 100)}.${String(p % 100).padStart(2, "0")}`;
 }
 
-type Result = { ok: true; b: PriceBreakdown } | { ok: false; field: "hours" | "tariff" | "rate"; message: string };
+type Result = { ok: true; b: PriceBreakdown; perHour: number } | { ok: false; field: "hours" | "tariff" | "rate"; message: string };
 
 function compute(gpu: GpuClass, hours: string, tariff: string, rate: string): Result {
   const seconds = parseHoursToSeconds(hours);
@@ -36,6 +38,7 @@ function compute(gpu: GpuClass, hours: string, tariff: string, rate: string): Re
     return {
       ok: true,
       b: priceJob([{ gpuSeconds: seconds, watts: DEFAULT_WATTS[gpu], tariffPaisePerKwh: tariffPaise, ownerRatePaisePerHr: ratePaise }]),
+      perHour: allInPerGpuHourPaise(DEFAULT_WATTS[gpu], tariffPaise, ratePaise),
     };
   } catch (e) {
     if (e instanceof PricingInputError) return { ok: false, field: "hours", message: c.outOfRange };
@@ -46,9 +49,9 @@ function compute(gpu: GpuClass, hours: string, tariff: string, rate: string): Re
 export function Calculator() {
   const id = useId();
   const [gpu, setGpu] = useState<GpuClass>("rtx4070");
-  const [hours, setHours] = useState("10");
+  const [hours, setHours] = useState(String(SAMPLE_QUOTE_HOURS));
   const [tariff, setTariff] = useState(paiseToInput(DEFAULT_TARIFF_PAISE_PER_KWH));
-  const [rate, setRate] = useState(paiseToInput(EXAMPLE_OWNER_RATE_PAISE_PER_HR.rtx4070));
+  const [rate, setRate] = useState(paiseToInput(DEFAULT_OWNER_RATE_PAISE_PER_HR));
 
   const result = compute(gpu, hours, tariff, rate);
   const err = (f: "hours" | "tariff" | "rate") => (!result.ok && result.field === f ? result.message : null);
@@ -98,11 +101,7 @@ export function Calculator() {
           <select
             id={`${id}-gpu`}
             value={gpu}
-            onChange={(e) => {
-              const next = e.target.value as GpuClass;
-              setGpu(next);
-              setRate(paiseToInput(EXAMPLE_OWNER_RATE_PAISE_PER_HR[next]));
-            }}
+            onChange={(e) => setGpu(e.target.value as GpuClass)}
             className="rounded border border-mist/60 bg-night px-3 py-2 text-lavender"
           >
             {CLASSES.map((k) => (
@@ -114,7 +113,7 @@ export function Calculator() {
         </div>
         {field("hours", c.hoursLabel, c.hoursHint, hours, setHours)}
         {field("tariff", c.tariffLabel, c.tariffHint, tariff, setTariff)}
-        {field("rate", c.rateLabel, c.rateHint, rate, setRate)}
+        {field("rate", c.rateLabel, fill(c.rateHint), rate, setRate)}
       </div>
 
       <div>
@@ -152,6 +151,7 @@ export function Calculator() {
                   .replace("{ownerReceives}", formatPaise(result.b.ownerReceivesPaise))
                   .replace("{electricity}", formatPaise(result.b.electricityPaise))}
               </p>
+              <p className="mt-1 text-sm text-mist">{c.perHour.replace("{perHour}", formatPaise(result.perHour))}</p>
             </>
           ) : (
             <p className="text-mist">{result.message}</p>
