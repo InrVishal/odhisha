@@ -99,7 +99,7 @@ export const WORKLOADS: { readonly [K in WorkloadType]: WorkloadSpec } = {
     type: "text_embeddings",
     label: "Batch text embeddings",
     itemKind: "text",
-    image: null,
+    image: "ghcr.io/inrvishal/nightshift-text-embeddings@sha256:6d9c8e3e611c643d8594ca5456978df3622a7e6187e65c050630e1ad81b4e3f4",
     params: embeddingParams,
     limits: {
       maxItems: 5000,
@@ -118,7 +118,7 @@ export const WORKLOADS: { readonly [K in WorkloadType]: WorkloadSpec } = {
     type: "image_captioning",
     label: "Batch image captioning",
     itemKind: "image",
-    image: null,
+    image: "ghcr.io/inrvishal/nightshift-image-captioning@sha256:5197a0fe548beae3a0cdaba6694625df4e53b3d497ed8a3c4f9bd4514eead3fe",
     params: captionParams,
     limits: {
       maxItems: 200,
@@ -141,7 +141,7 @@ export const WORKLOADS: { readonly [K in WorkloadType]: WorkloadSpec } = {
     type: "image_resize",
     label: "Batch image resizing",
     itemKind: "image",
-    image: null,
+    image: "ghcr.io/inrvishal/nightshift-image-resize@sha256:5a6817ae5b0ba1cab58095a4ea9c85b0acd48d5b05a466bfdafa8ba903a4d21c",
     params: resizeParams,
     limits: {
       maxItems: 200,

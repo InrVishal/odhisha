@@ -8,7 +8,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from nightshift_agent import __version__, logs, secrets_store, updates
+from nightshift_agent import __version__, benchmark, logs, secrets_store, updates
 from nightshift_agent.api import ApiError, Client
 from nightshift_agent.config import AgentConfig, ConfigError, state_dir, validate_api_url
 from nightshift_agent.runner import Agent, is_paused, set_paused
@@ -23,7 +23,7 @@ def _say(msg: str) -> None:
 
 def cmd_login(args: argparse.Namespace, d: Path) -> int:
     try:
-        raw = sys.stdin.readline() if args.token == "-" else args.token  # noqa: S105 - "-" means read stdin
+        raw = sys.stdin.readline() if args.token == "-" else args.token  # noqa: S105  # nosec B105 - "-" means read stdin
         token = secrets_store.check_token(raw)
         api = validate_api_url(args.api) if args.api else AgentConfig.load(d).api
     except (secrets_store.TokenError, ConfigError) as err:
@@ -68,7 +68,17 @@ def cmd_start(args: argparse.Namespace, d: Path) -> int:
         if not ensure_image(pin.image):
             logger.warning("couldn't pull the %s image; that work will be refused until it can be pulled", workload)
     logger.info("nightshift-agent %s starting for node %s against %s", __version__, cfg.node_id[:8], cfg.api)
-    agent = Agent(client=Client(cfg.api, token), config=cfg, node_id=cfg.node_id, directory=d)
+    if cfg.benchmark_score is None and "text_embeddings" in WHITELIST:
+        logger.info("first start: benchmarking this PC (takes about a minute)")
+        try:
+            cfg.benchmark_score = benchmark.run_benchmark(WHITELIST["text_embeddings"], gpu=cfg.use_gpu)
+            cfg.save(d)
+            logger.info("benchmark score %s (RTX 3060 = 1000)", cfg.benchmark_score)
+        except Exception as err:  # noqa: BLE001 - a failed benchmark must not stop the agent
+            logger.warning("benchmark failed (%s); the coordinator will use the class default", err)
+    agent = Agent(
+        client=Client(cfg.api, token), config=cfg, node_id=cfg.node_id, directory=d, benchmark_score=cfg.benchmark_score
+    )
     try:
         agent.run_forever(once=args.once)
     except KeyboardInterrupt:

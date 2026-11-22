@@ -35,8 +35,12 @@ MCowBQYDK2VwAyEApXeRgVXwRdzUjCMQ9lmKQUXji8J5zuDZnvMW7DmLHis=
 -----END PUBLIC KEY-----
 """
 
-#: Vercel Production environment.
-PRODUCTION_KEY_PEM: str | None = None
+#: Vercel Production environment (https://nightshift-ten-iota.vercel.app).
+#: kid a80990c7b502fa31
+PRODUCTION_KEY_PEM: str | None = """-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEA4U9yIGs3btT1s3pUON+DjuXpUu699IZ/lgkAhZg1aIE=
+-----END PUBLIC KEY-----
+"""
 
 #: Clock skew we tolerate on `iat` (tasks issued "in the future").
 MAX_SKEW_S = 300
@@ -81,8 +85,29 @@ def is_digest_pinned(image: str) -> bool:
     return bool(name) and sep == "@sha256:" and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
 
 
-#: Filled with the digests the release pipeline builds (see agent/workloads/).
-WHITELIST: dict[str, WorkloadPin] = {}
+#: Exactly the images .github/workflows/images.yml built and pushed. The
+#: coordinator signs the same digests into tasks (lib/coordinator/workloads.ts);
+#: tests/unit/agent-pins.test.ts keeps the two lists identical.
+WHITELIST: dict[str, WorkloadPin] = {
+    "text_embeddings": WorkloadPin(
+        image="ghcr.io/inrvishal/nightshift-text-embeddings@sha256:6d9c8e3e611c643d8594ca5456978df3622a7e6187e65c050630e1ad81b4e3f4",
+        wants_gpu=True,
+        memory="4g",
+        cpus="2",
+    ),
+    "image_captioning": WorkloadPin(
+        image="ghcr.io/inrvishal/nightshift-image-captioning@sha256:5197a0fe548beae3a0cdaba6694625df4e53b3d497ed8a3c4f9bd4514eead3fe",
+        wants_gpu=True,
+        memory="6g",
+        cpus="2",
+    ),
+    "image_resize": WorkloadPin(
+        image="ghcr.io/inrvishal/nightshift-image-resize@sha256:5a6817ae5b0ba1cab58095a4ea9c85b0acd48d5b05a466bfdafa8ba903a4d21c",
+        wants_gpu=False,
+        memory="2g",
+        cpus="2",
+    ),
+}
 
 
 # ─── Task verification ─────────────────────────────────────────────────────

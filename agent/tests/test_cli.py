@@ -122,6 +122,25 @@ def test_start_runs_the_agent(state: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert run("start") == 1
 
 
+def test_first_start_benchmarks_once_and_reports_the_score(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nightshift_agent.trust import WorkloadPin
+
+    monkeypatch.setattr(cli, "Client", LoginClient)
+    run("login", TOKEN)
+    monkeypatch.setattr(cli, "docker_available", lambda: True)
+    monkeypatch.setattr(cli, "ensure_image", lambda _img: True)
+    monkeypatch.setitem(cli.WHITELIST, "text_embeddings", WorkloadPin(image="x@sha256:" + "a" * 64, wants_gpu=True))
+    calls: list[int] = []
+    monkeypatch.setattr(cli.benchmark, "run_benchmark", lambda pin, gpu: calls.append(1) or 1450)
+    scores: list[int | None] = []
+    monkeypatch.setattr(cli.Agent, "run_forever", lambda self, once=False: scores.append(self.benchmark_score))
+    assert run("start", "--once") == 0
+    assert run("start", "--once") == 0
+    assert calls == [1]  # only on the first start
+    assert scores == [1450, 1450]
+    assert AgentConfig.load(state).benchmark_score == 1450
+
+
 def test_update_refuses_unverifiable_releases(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     wheel = tmp_path / "w.whl"
     wheel.write_bytes(b"x")

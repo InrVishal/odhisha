@@ -191,11 +191,15 @@ def test_key_id_matches_the_coordinator() -> None:
     # lib/security/signing.ts keyId(): sha256(SPKI DER)[:16]. The preview
     # deployment published this kid for the pinned key.
     assert key_id(trust.PREVIEW_KEY_PEM) == "052ed2bc229d420f"
+    # And production published this one.
+    assert trust.PRODUCTION_KEY_PEM is not None
+    assert key_id(trust.PRODUCTION_KEY_PEM) == "a80990c7b502fa31"
 
 
 def test_pinned_keys_and_dev_override(coord: Coordinator, monkeypatch: pytest.MonkeyPatch) -> None:
     keys = pinned_keys()
     assert "052ed2bc229d420f" in keys
+    assert "a80990c7b502fa31" in keys
     monkeypatch.setenv("NIGHTSHIFT_DEV_PINNED_KEY", coord.pem)
     assert coord.kid not in pinned_keys()  # ignored outside dev mode
     monkeypatch.setenv("NIGHTSHIFT_DEV", "1")

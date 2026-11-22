@@ -111,3 +111,48 @@ ruff check . && ruff format --check . && mypy && bandit -r src -c pyproject.toml
 ```
 
 To work against a local coordinator, set `NIGHTSHIFT_DEV=1`. Plain HTTP is then allowed, to localhost only. To trust the dev server's random signing key, also set `NIGHTSHIFT_DEV_PINNED_KEY` to the PEM from `/api/agent/signing-key`.
+
+## Live demo: three laptops
+
+This runs against production (https://nightshift-ten-iota.vercel.app) once Phase 4 is merged. Until then, use a preview URL, as noted below.
+
+**You need, once:** a NightShift account. Sign in on the site with Google, or with the email link. Without a verified domain, the email link only reaches the Resend account owner's address. One account can be both the owner and the buyer.
+
+1. **Get your session cookie.** Sign in, open the browser dev tools (**Application → Cookies**), and copy the value of `__Secure-authjs.session-token`. On the machine with the repo:
+   ```powershell
+   $env:NIGHTSHIFT_SESSION = "<that value>"
+   ```
+2. **Register the three laptops.** Each command prints the laptop's token once, so keep each one for its laptop:
+   ```powershell
+   npm run ns -- node add "Laptop 1" cpu
+   npm run ns -- node add "Laptop 2" cpu
+   npm run ns -- node add "Laptop 3" cpu
+   npm run ns -- node list
+   ```
+   For a daytime demo, open the night window to all day:
+   ```powershell
+   npm run ns -- node window <nodeId> all-day
+   ```
+3. **On each laptop** (Windows 11), install Docker Desktop with WSL 2 and start it. Then install Python 3.11 and pipx, and run:
+   ```powershell
+   pipx install "git+https://github.com/InrVishal/odhisha.git#subdirectory=agent"
+   nightshift-agent login -          # paste that laptop's token, then press Enter
+   nightshift-agent start --no-gpu   # CPU mode: reports 65 W, marked as estimated
+   ```
+   - **First start:** the agent pulls the pinned images (about 2 GB for text embeddings) and runs the benchmark. It then shows `heartbeat: ... canWork=True`.
+   - **Laptop with an NVIDIA GPU:** drop `--no-gpu` and the agent reports real `nvidia-smi` watts. The images are CPU builds for now, so the GPU won't make the work faster yet.
+4. **Submit a job** from any machine, using a text file with one sentence per line:
+   ```powershell
+   npm run ns -- quote reviews.txt cpu   # price breakdown and "done by" time
+   npm run ns -- confirm <jobId>         # simulated charge (demo mode)
+   npm run ns -- status <jobId>          # run it again to watch the pieces finish
+   npm run ns -- results <jobId> out.json
+   npm run ns -- earnings                # compute and electricity, shown separately
+   ```
+   A job of 600 or more lines splits into 3 or more pieces, so all three laptops get work. To show a retry, run `nightshift-agent pause` on one laptop mid-job, or close its lid: its piece goes to another laptop once the lease runs out.
+
+**Against a preview instead of production:**
+- On every agent command, set `NIGHTSHIFT_VERCEL_BYPASS` to the Vercel automation bypass secret.
+- Use `nightshift-agent login - --api https://<preview>.vercel.app` to point the agent at the preview.
+- Set `NIGHTSHIFT_API` to the preview URL for `npm run ns`.
+- Previews use the Vercel Preview signing key, which is pinned too.

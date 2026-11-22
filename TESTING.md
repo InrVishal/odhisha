@@ -8,7 +8,9 @@ Every suite below runs in CI (`.github/workflows/ci.yml`) and must pass before a
 | 1 | Unit + integration with coverage (90% lines on `lib/`) | `npm run test:coverage` | ✅ |
 | 2 | Integration against Postgres | `npm run test:integration` | ✅ |
 | 3 | Security tests (IDOR on every resource, missing session, CSRF, tampered signatures, replayed nonces, oversized payloads, banned file types, rate limits, tokens, headers, append-only) | part of `npm test` and `npm run test:e2e` | ✅ more each phase |
-| 4 | Agent (pytest) | `cd agent && pytest` | ⏳ phase 4 |
+| 4 | Agent (pytest, 90%+ coverage; sandbox escape tests run real containers when Docker is up) | `cd agent && pytest --cov` | ✅ |
+| 4 | Agent static checks: ruff, `mypy --strict`, bandit, pip-audit | `cd agent && ruff check . && ruff format --check . && mypy && bandit -r src -c pyproject.toml && pip-audit -r requirements.lock` | ✅ |
+| 4 | Live agent test: the real agent completes a real embedding fragment on the preview, the buyer downloads it | CI step in the preview job (`tests/live/agent-preview.ts`) | ✅ |
 | 5 | End-to-end (Playwright: Chromium, Firefox, WebKit, mobile) | `npm run build && npm run test:e2e` | ✅ site flows; full job flow ⏳ phase 5 |
 | 6 | Accessibility (axe-core on every page, zero serious/critical) + keyboard-only | `npm run build && npm run test:a11y` | ✅ |
 | 7 | Lighthouse CI (90+ every category, median of 3) | `npx @lhci/cli@0.16.1 autorun --config=lighthouserc.cjs` (set `LHCI_BASE_URL`) | ✅ configured, see notes |
@@ -91,4 +93,23 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres npm run t
   - job data encrypted at rest with a key per piece; quote expiry, cancel and the 7-day purge delete the data, ledgers stay;
   - the tick runs at most once per 15 s and is idempotent; the cron route needs `CRON_SECRET`.
 - **Security** (`tests/integration/api-security.test.ts`): IDOR for jobs, results, nodes, tokens and earnings; one node can't complete another's lease; 401 on every endpoint without a session; cross-site writes refused; oversized bodies refused before and while reading; unknown fields, bad JSON, wrong content types; validation errors never echo values; output sha256 mismatch; SVG/HTML/EXE/GIF uploads refused whatever their name; 429 with Retry-After on every limited surface; token hash-only storage and audit.
+- **Lifecycle demo**: `npm run build && npm run demo:lifecycle` runs one job end to end against a local server, with simulated PCs and a fake clock for the timing paths.
 - **E2E** (`tests/e2e/api.spec.ts`, on every preview): the signing key is published, endpoints need a session or a node token, the cron route needs its secret, API responses carry the deny-all CSP and no stack traces.
+
+**Phase 4** (agent):
+- **Task checks** (`agent/tests/test_trust.py`):
+  - every rejection reason: tampered task text, tampered or non-base64 signature, a task signed by another key (including one claiming our key id), expired, issued in the future, wrong node, replayed nonce (also after a restart), non-whitelisted workloads, wrong image (tag, other digest, other registry, extra flags, missing), input that doesn't match its hash, malformed fields;
+  - a rejected task doesn't burn its nonce;
+  - the pinned key's id matches the one the preview publishes.
+- **Sandbox** (`agent/tests/test_sandbox.py`): the exact `docker run` argument list; `--gpus` only when asked; nothing that weakens isolation; digest-only images; output name sanitising (path traversal, `..`, slashes, hidden files, Windows reserved names, unicode, long names); oversized output; too many files; folders and symlinks; timeout hard kill; cleanup on every path; exit-code mapping.
+- **Sandbox escape** (`agent/tests/test_sandbox_docker.py`, real containers): no network or DNS; uid/gid 65534; no capabilities; no-new-privileges; seccomp filter on; no writes outside `/tmp` and `/out`; `/tmp` is noexec; output folder not listable (Linux); fork bomb stopped at the pids limit; memory hog killed; timeout kill removes the container.
+- **Agent loop** (`agent/tests/test_runner.py`): uploads with sha256 and power headers; CPU mode estimated watts; pause and the night window, including finishing the current fragment first; waits when the coordinator says so; reports unacceptable tasks; drops forged ones without trusting their ids; never runs a replay; maps sandbox failures; never runs past the lease; backoff and stop on a revoked token.
+- **CLI, config, tokens, logs, telemetry, updates** (`test_cli.py`, `test_parts.py`):
+  - HTTPS-only URLs (localhost only in dev mode);
+  - token in the keyring or a 0600 file, never printed or logged;
+  - TLS verification on;
+  - exponential backoff with jitter;
+  - nvidia-smi parsing;
+  - the night window;
+  - signed-release checks;
+  - the benchmark runs once on the first start.

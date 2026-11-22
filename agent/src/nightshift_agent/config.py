@@ -70,6 +70,8 @@ class AgentConfig:
     cpu_watts: int = 65
     #: Use the NVIDIA GPU in containers when one is present.
     use_gpu: bool = True
+    #: Benchmark score from the first start (RTX 3060 = 1000). Sent with heartbeats.
+    benchmark_score: int | None = None
     extra: dict[str, str] = field(default_factory=dict)
 
     @classmethod
