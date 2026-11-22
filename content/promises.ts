@@ -35,9 +35,9 @@ export const promises: Promise_[] = [
   { text: "CPU mode for laptops without an NVIDIA GPU", phase: 4, done: true, proof: "agent/tests/test_runner.py (CPU mode), tests/live/agent-preview.ts (CPU node)" },
 
   // Phase 5
-  { text: "Invoices (PDF) show the deadline refund line automatically", phase: 5, done: false },
-  { text: "Owner earnings show electricity as its own line; owners see every piece their PC ran", phase: 5, done: false },
-  { text: "Dashboard: download your data and delete your account; ledger keeps records without your email", phase: 5, done: false },
+  { text: "Invoices (PDF) show the deadline refund line automatically", phase: 5, done: true, proof: "tests/unit/pdf.test.ts, tests/integration/dashboard.test.ts (refund line), tests/e2e/dashboard.spec.ts" },
+  { text: "Owner earnings show electricity as its own line; owners see every piece their PC ran", phase: 5, done: true, proof: "tests/integration/dashboard.test.ts (ownerPieces, earningsByNode), tests/e2e/dashboard.spec.ts" },
+  { text: "Dashboard: download your data and delete your account; ledger keeps records without your email", phase: 5, done: true, proof: "tests/integration/account.test.ts, tests/e2e/dashboard.spec.ts" },
 
   // Phase 6
   { text: "About 1 piece in 10 re-run on a second PC; trust scores; bad PCs paused", phase: 6, done: false },

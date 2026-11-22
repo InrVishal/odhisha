@@ -23,16 +23,16 @@ The copy describes the finished prototype. Each phase ticks off what it delivers
 - [x] **Phase 4:** Locked container: no internet, no file access, memory and time limits, deleted after each piece (proof: `agent/tests/test_sandbox_docker.py (real containers), agent/tests/test_sandbox.py`)
 - [ ] **Phase 4:** Benchmark on join, normalised so an RTX 3060 scores 1000 (Time-Bank weighting depends on it)
 - [x] **Phase 4:** CPU mode for laptops without an NVIDIA GPU (proof: `agent/tests/test_runner.py (CPU mode), tests/live/agent-preview.ts (CPU node)`)
-- [ ] **Phase 5:** Invoices (PDF) show the deadline refund line automatically
-- [ ] **Phase 5:** Owner earnings show electricity as its own line; owners see every piece their PC ran
-- [ ] **Phase 5:** Dashboard: download your data and delete your account; ledger keeps records without your email
+- [x] **Phase 5:** Invoices (PDF) show the deadline refund line automatically (proof: `tests/unit/pdf.test.ts, tests/integration/dashboard.test.ts (refund line), tests/e2e/dashboard.spec.ts`)
+- [x] **Phase 5:** Owner earnings show electricity as its own line; owners see every piece their PC ran (proof: `tests/integration/dashboard.test.ts (ownerPieces, earningsByNode), tests/e2e/dashboard.spec.ts`)
+- [x] **Phase 5:** Dashboard: download your data and delete your account; ledger keeps records without your email (proof: `tests/integration/account.test.ts, tests/e2e/dashboard.spec.ts`)
 - [ ] **Phase 6:** About 1 piece in 10 re-run on a second PC; trust scores; bad PCs paused
 - [ ] **Phase 6:** Only work that passes checks earns Time-Bank credits
 - [ ] **Phase 7:** Time-Bank wallet (demo): earn and spend credits; no cash-out, sale or transfer
 - [ ] **Phase 7:** GPU-on-EMI simulator (demo only, no lending)
 - [ ] **Phase 8:** Sentry error reports with personal details removed
 
-Done: 14 of 23.
+Done: 17 of 23.
 
 **Still open from you:** set `CONTACT_EMAIL` in Vercel so the privacy page can show a real address.
 

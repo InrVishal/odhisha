@@ -16,6 +16,7 @@ Writes need a same-origin `Origin` header.
 | GET | `/api/jobs` | – | The buyer's last 50 jobs |
 | GET | `/api/jobs/{id}` | – | Status, progress (`fragmentsDone`, `fragmentsTotal`, `nodesWorking`), `refunded`, `netChargedPaise` |
 | GET | `/api/jobs/{id}/results` | – | A streamed download (`Content-Disposition: attachment`): `{ jobId, workloadType, items: [...] }`, one item per input, in input order. 409 until the job finishes, 410 after the 7-day purge |
+| GET | `/api/jobs/{id}/invoice` | – | The invoice as a PDF download: the quote breakdown, the charge and, if the deadline was missed, the refund line. 409 `no_invoice` until the quote is confirmed |
 
 Workloads (`lib/coordinator/workloads.ts`):
 
@@ -39,6 +40,15 @@ Workloads (`lib/coordinator/workloads.ts`):
 | GET | `/api/earnings` | – | `computePayPaise`, `powerReimbursementPaise` (its own line), `paidOutPaise`, `balancePaise` |
 
 Node management is limited to 20 requests an hour.
+
+## Account (session cookie)
+
+| Method | Path | Body | Notes |
+| --- | --- | --- | --- |
+| GET | `/api/account/export` | – | Everything stored about the account as a JSON download: account, PCs, jobs, all three ledgers, own activity log. No idempotency keys, IP hashes or token hashes |
+| DELETE | `/api/account` | `{ "confirm": "DELETE" }` | Removes the email and every login, revokes every PC token, deletes all stored job data now. Ledger rows stay under the account id. 409 `jobs_running` while a job is queued or running. Clears the session cookie |
+
+Both are limited to 5 requests an hour.
 
 ## Agent (`Authorization: Bearer nsn_…`)
 

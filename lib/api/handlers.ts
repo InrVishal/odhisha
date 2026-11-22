@@ -1,5 +1,8 @@
 import { z } from "zod";
+import { deleteAccount, exportAccount } from "@/lib/account";
 import { AuthzError, type SessionUser } from "@/lib/auth/authz-error";
+import { SESSION_COOKIE_NAMES } from "@/lib/auth/sessions";
+import { audit } from "@/lib/audit";
 import { authenticateAgent, completeFragment, failFragment, failInput, heartbeat, heartbeatInput, leaseFragment, parsePowerHeaders } from "@/lib/coordinator/agent";
 import { CoordinatorError } from "@/lib/coordinator/errors";
 import { cancelQuote, confirmJob, getJob, listJobs, openResults, quoteJob, quoteRequest, textQuoteRequest } from "@/lib/coordinator/jobs";
@@ -7,6 +10,7 @@ import { getNode, listNodes, registerNode, registerNodeInput, revokeNode, rotate
 import { maybeTick, runTick } from "@/lib/coordinator/tick";
 import { MAX_OUTPUT_BYTES, MAX_REQUEST_BYTES, WORKLOADS, type InputItem } from "@/lib/coordinator/workloads";
 import type { Db } from "@/lib/db/client";
+import { invoicePdf, loadInvoice } from "@/lib/invoice";
 import { ownerEarnings } from "@/lib/ledger";
 import type { LimitResult, PolicyName } from "@/lib/ratelimit";
 import { sniffImageType } from "@/lib/security/filetype";
@@ -204,6 +208,21 @@ export function resultsHandler(_req: Request, d: UserDeps, jobId: string): Promi
   });
 }
 
+export function invoiceHandler(_req: Request, d: UserDeps, jobId: string): Promise<Response> {
+  return handle(async () => {
+    const user = requireUser(d);
+    const inv = await loadInvoice(d.db, user.id, jobId);
+    return new Response(Buffer.from(invoicePdf(inv)), {
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="nightshift-invoice-${inv.number}.pdf"`,
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "no-store",
+      },
+    });
+  });
+}
+
 // ─── Owner: nodes and earnings ─────────────────────────────────────────────
 
 function nodeCtx(req: Request, d: UserDeps, user: SessionUser) {
@@ -274,6 +293,41 @@ export function earningsHandler(_req: Request, d: UserDeps): Promise<Response> {
   return handle(async () => {
     const user = requireUser(d);
     return json({ earnings: await ownerEarnings(d.db, user.id), demo: true });
+  });
+}
+
+// ─── Account: export and delete (DPDP access and erasure) ─────────────────
+
+export function exportAccountHandler(req: Request, d: UserDeps): Promise<Response> {
+  return handle(async () => {
+    const user = requireUser(d);
+    const limited = await limitOr429(d, "accountUser", user.id);
+    if (limited) return limited;
+    const now = d.now();
+    const data = await exportAccount(d.db, user.id, now);
+    await audit(d.db, { actorId: user.id, actorType: "user", action: "account.exported", targetType: "user", targetId: user.id, ip: clientIp(req.headers) }, d.ipSecret);
+    return json(data, 200, {
+      "Content-Disposition": `attachment; filename="nightshift-account-${now.toISOString().slice(0, 10)}.json"`,
+    });
+  });
+}
+
+const deleteAccountInput = z.strictObject({ confirm: z.literal("DELETE") });
+
+export function deleteAccountHandler(req: Request, d: UserDeps): Promise<Response> {
+  return handle(async () => {
+    assertSameOrigin(req);
+    const user = requireUser(d);
+    const limited = await limitOr429(d, "accountUser", user.id);
+    if (limited) return limited;
+    await readJson(req, deleteAccountInput, 1024);
+    const result = await deleteAccount(d.db, user.id, { now: d.now(), ip: clientIp(req.headers), ipSecret: d.ipSecret });
+    // The sessions are gone from the database; clear the cookie too.
+    const res = json({ deleted: true, ...result });
+    for (const name of SESSION_COOKIE_NAMES) {
+      res.headers.append("Set-Cookie", `${name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${name.startsWith("__Secure-") ? "; Secure" : ""}`);
+    }
+    return res;
   });
 }
 

@@ -113,3 +113,16 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres npm run t
   - the night window;
   - signed-release checks;
   - the benchmark runs once on the first start.
+
+**Phase 5** (dashboards):
+- **Unit** (`tests/unit/pdf.test.ts`): the PDF writer's xref offsets and stream lengths are exact; text can't break out of a `Tj` operator; ₹ and dashes are mapped, other non-ASCII replaced; the invoice lists every quote line, the charge, the total paid, and a refund line with ₹0 paid when the deadline was missed.
+- **Integration** (`tests/integration/dashboard.test.ts`, `account.test.ts`, against Postgres):
+  - invoices: a PDF download for the buyer of a finished job; the refund line added automatically after a missed deadline; 404 for other buyers and bad ids, 401 signed out, 409 before the quote is confirmed;
+  - owner views: earnings per PC with electricity separate, every piece a PC ran, scoped to the owner;
+  - Time-Bank balance per user;
+  - admin views: nodes, quarantine list, jobs, all three ledgers merged newest first, audit log, with no contact data;
+  - data export: everything about the account and nothing about anyone else, no internal keys or hashes, audited, rate limited;
+  - account deletion: email, logins, PC access and job data removed; ledger rows kept under the account id; refused while a job runs; open quotes cancelled; typed confirmation, same-site request and a session required; rate limited.
+- **E2E** (`tests/e2e/dashboard.spec.ts`):
+  - every run, every browser: each dashboard page sends a signed-out visitor to the login page; the header's Log in link; the invoice needs a session;
+  - on every preview, signed in with sessions the live agent test creates (owner, buyer, admin), after the real agent finished a real job: the buyer sees the finished job and downloads its results, invoice and data export; quote errors show in the form; the owner sees the PC with estimated watts, earnings with electricity separate and every piece, adds a PC (token shown once), pauses and removes it; the admin sees every panel section and a non-admin gets a 404; every dashboard page has one h1 and no serious axe issues.

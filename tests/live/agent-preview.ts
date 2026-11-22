@@ -14,7 +14,7 @@
  */
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -31,11 +31,14 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
-async function session(client: pg.Client, email: string): Promise<string> {
+const sessionTokens: Record<string, string> = {};
+
+async function session(client: pg.Client, email: string, role: "user" | "admin" = "user"): Promise<string> {
   const id = randomUUID();
   const token = randomBytes(32).toString("base64url");
-  await client.query(`insert into "user" (id, email, "emailVerified") values ($1, $2, now())`, [id, email]);
+  await client.query(`insert into "user" (id, email, "emailVerified", role) values ($1, $2, now(), $3)`, [id, email, role]);
   await client.query(`insert into "session" ("sessionToken", "userId", expires) values ($1, $2, now() + interval '1 hour')`, [token, id]);
+  sessionTokens[email.split("-")[0]!] = token;
   return `__Secure-authjs.session-token=${token}`;
 }
 
@@ -69,8 +72,10 @@ async function main(): Promise<void> {
   const suffix = randomBytes(4).toString("hex");
   const owner = await session(client, `owner-${suffix}@ci.nightshift.test`);
   const buyer = await session(client, `buyer-${suffix}@ci.nightshift.test`);
+  // For the signed-in dashboard browser tests that run next (tests/e2e/dashboard.spec.ts).
+  await session(client, `admin-${suffix}@ci.nightshift.test`, "admin");
   await client.end();
-  log("owner and buyer sessions created in the preview database");
+  log("owner, buyer and admin sessions created in the preview database");
 
   const reg = await api<{ node: { id: string }; token: string }>(owner, "POST", "/api/nodes", { name: "CI runner", gpuClass: "cpu" });
   await api(owner, "PATCH", `/api/nodes/${reg.node.id}`, { nightWindowStartMin: 0, nightWindowEndMin: 0 });
@@ -119,6 +124,14 @@ async function main(): Promise<void> {
     log(`owner: watts ${nodes.nodes[0]?.measuredWatts} (estimated=${nodes.nodes[0]?.wattsEstimated}), paid ${earnings.earnings.computePayPaise} + ${earnings.earnings.powerReimbursementPaise} paise electricity`);
     if (!nodes.nodes[0]?.wattsEstimated) fail("CPU mode watts should be marked estimated");
     log(`PASS: ${items.length} embeddings × 384 dims downloaded by the buyer, all normalised`);
+
+    // Hand the sessions and the finished job to the dashboard browser tests.
+    // A private temp file, never printed: the tokens are live for an hour.
+    const authFile = process.env.E2E_AUTH_FILE;
+    if (authFile) {
+      writeFileSync(authFile, JSON.stringify({ ...sessionTokens, jobId, nodeId: reg.node.id }), { mode: 0o600 });
+      log("sessions handed to the dashboard browser tests");
+    }
   } finally {
     rmSync(state, { recursive: true, force: true });
   }

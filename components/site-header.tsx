@@ -25,6 +25,11 @@ export function SiteHeader() {
               </li>
             ))}
             <li>
+              <Link href="/signin" className="rounded px-3 py-2 text-sm text-mist hover:text-lavender">
+                {site.login}
+              </Link>
+            </li>
+            <li>
               <Link href="/waitlist" className="ml-2 rounded bg-orange px-3 py-2 text-sm font-semibold text-deep hover:bg-lavender">
                 Join the waitlist
               </Link>
@@ -45,6 +50,11 @@ export function SiteHeader() {
                   </Link>
                 </li>
               ))}
+              <li>
+                <Link href="/signin" className="block rounded px-3 py-3 text-lavender hover:bg-navy">
+                  {site.login}
+                </Link>
+              </li>
               <li>
                 <Link href="/waitlist" className="mt-1 block rounded bg-orange px-3 py-3 font-semibold text-deep">
                   Join the waitlist
