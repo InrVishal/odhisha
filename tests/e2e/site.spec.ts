@@ -35,8 +35,8 @@ test("pricing page shows the all-in price per GPU-hour for each PC", async ({ pa
   await expect(page.getByText("14 GPU-hours on an RTX 4070 PC comes to ₹552")).toBeVisible();
 });
 
-test("waitlist gives the same answer for a repeat signup", async ({ page, browserName }) => {
-  writeTestsInOneBrowserWhenRemote(browserName);
+test("waitlist gives the same answer for a repeat signup", async ({ page }) => {
+  writeTestsInOneBrowserWhenRemote();
   await useFreshIp(page);
   const email = `repeat-${Date.now()}@example.in`;
   for (let i = 0; i < 2; i++) {

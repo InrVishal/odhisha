@@ -18,10 +18,15 @@ export async function useFreshIp(page: Page): Promise<string> {
 }
 
 /**
- * Tests that write rate-limited data (waitlist signups) run in one browser
+ * Tests that write rate-limited data (waitlist signups) run in ONE project
  * only against a deployed preview, where every request comes from the same
  * CI runner IP and the real per-IP limit applies.
+ *
+ * Checks the project name, not the browser engine: the "mobile" project
+ * (Pixel 7) is Chromium too, so an engine check would let it write as well.
  */
-export function writeTestsInOneBrowserWhenRemote(browserName: string): void {
-  test.skip(isRemote && browserName !== "chromium", "rate-limited writes run once against a deployed preview");
+export const REMOTE_WRITE_PROJECT = "chromium";
+
+export function writeTestsInOneBrowserWhenRemote(): void {
+  test.skip(isRemote && test.info().project.name !== REMOTE_WRITE_PROJECT, "rate-limited writes run once against a deployed preview");
 }

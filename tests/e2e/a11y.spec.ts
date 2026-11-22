@@ -52,8 +52,8 @@ test.describe("keyboard only", () => {
     await expect(page.getByLabel("Owner's rate (₹ per hour)")).toHaveValue("25");
   });
 
-  test("the waitlist form can be filled and sent with the keyboard", async ({ page, browserName }) => {
-    writeTestsInOneBrowserWhenRemote(browserName);
+  test("the waitlist form can be filled and sent with the keyboard", async ({ page }) => {
+    writeTestsInOneBrowserWhenRemote();
     await useFreshIp(page);
     await page.goto("/waitlist");
     await page.getByLabel("Email", { exact: true }).focus();
