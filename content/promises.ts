@@ -28,11 +28,11 @@ export const promises: Promise_[] = [
   { text: "Owner payouts can never add up to more than the buyer's quote", phase: 3, done: true, proof: "tests/unit/scheduler.test.ts (property test)" },
 
   // Phase 4
-  { text: "The app asks for work (no inbound ports), stops outside the night window and on pause", phase: 4, done: false },
-  { text: "Every task signed by us and checked by the app; unsigned tasks refused", phase: 4, done: false },
-  { text: "Locked container: no internet, no file access, memory and time limits, deleted after each piece", phase: 4, done: false },
+  { text: "The app asks for work (no inbound ports), stops outside the night window and on pause", phase: 4, done: true, proof: "agent/tests/test_runner.py (pause, window, finish the current piece first)" },
+  { text: "Every task signed by us and checked by the app; unsigned tasks refused", phase: 4, done: true, proof: "agent/tests/test_trust.py, tests/live/agent-preview.ts" },
+  { text: "Locked container: no internet, no file access, memory and time limits, deleted after each piece", phase: 4, done: true, proof: "agent/tests/test_sandbox_docker.py (real containers), agent/tests/test_sandbox.py" },
   { text: "Benchmark on join, normalised so an RTX 3060 scores 1000 (Time-Bank weighting depends on it)", phase: 4, done: false },
-  { text: "CPU mode for laptops without an NVIDIA GPU", phase: 4, done: false },
+  { text: "CPU mode for laptops without an NVIDIA GPU", phase: 4, done: true, proof: "agent/tests/test_runner.py (CPU mode), tests/live/agent-preview.ts (CPU node)" },
 
   // Phase 5
   { text: "Invoices (PDF) show the deadline refund line automatically", phase: 5, done: false },

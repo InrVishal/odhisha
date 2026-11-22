@@ -59,6 +59,30 @@ jobs:
         if: always()
         with: { name: coverage, path: coverage/, retention-days: 7 }
 
+  agent:
+    name: 2b · Agent (ruff, mypy --strict, bandit, pytest + real-container sandbox tests)
+    needs: lint-typecheck
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with: { python-version: "3.11" }
+      - name: Install (hash-pinned)
+        run: |
+          python -m pip install --quiet --require-hashes -r requirements-dev.lock
+          python -m pip install --quiet --no-deps --no-build-isolation -e . || python -m pip install --quiet --no-deps -e .
+      - name: ruff
+        run: ruff check . && ruff format --check .
+      - name: mypy --strict
+        run: mypy
+      - name: bandit
+        run: bandit -r src -c pyproject.toml
+      - name: pytest (90% coverage, includes sandbox escape tests in real containers)
+        run: pytest --cov --cov-report=term-missing
+
   integration:
     name: 3 · Integration tests (Postgres 18)
     needs: unit
@@ -83,7 +107,7 @@ jobs:
 
   security:
     name: 4 · Security scans
-    needs: integration
+    needs: [integration, agent]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -129,6 +153,7 @@ jobs:
         run: |
           python -m pip install --quiet "pip-audit==2.10.1"
           pip-audit --strict -r agent/requirements.lock
+          pip-audit --strict -r agent/requirements-dev.lock
 
       - name: Banned words in site copy (source) and COPY.md in sync
         run: npm run copy:check -- --source-only
@@ -154,9 +179,12 @@ jobs:
         with: { name: playwright-build, path: "playwright-report/\ntest-results/", retention-days: 7 }
 
   preview:
-    name: Preview deploy (own Neon branch)
+    name: Preview deploy (own Neon branch) + live agent test
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     outputs:
       url: ${{ steps.deploy.outputs.url }}
     env:
@@ -197,6 +225,22 @@ jobs:
         env:
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: node scripts/check-headers.mjs "${{ steps.deploy.outputs.url }}"
+
+      # Runs here because it needs this run's preview database (to create
+      # the test owner and buyer sessions), which can't be passed to another job.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with: { python-version: "3.11" }
+      - name: Agent against the preview (real batch-embedding fragment, buyer downloads the result)
+        env:
+          PREVIEW_URL: ${{ steps.deploy.outputs.url }}
+          PREVIEW_DATABASE_URL: ${{ steps.neon.outputs.db_url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python -m pip install --quiet --require-hashes -r agent/requirements.lock
+          python -m pip install --quiet --no-deps ./agent
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          npx tsx tests/live/agent-preview.ts
 
   e2e:
     name: 6 · E2E against preview

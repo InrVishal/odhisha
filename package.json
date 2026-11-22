@@ -20,7 +20,8 @@
     "copy:check": "tsx scripts/check-copy.ts",
     "test:e2e": "playwright test",
     "test:a11y": "playwright test tests/e2e/a11y.spec.ts",
-    "demo:lifecycle": "tsx scripts/demo-lifecycle.ts"
+    "demo:lifecycle": "tsx scripts/demo-lifecycle.ts",
+    "ns": "tsx scripts/nightshift.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "1.11.3",

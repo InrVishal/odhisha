@@ -55,6 +55,8 @@ export async function authenticateAgent(db: Db, authorization: string | null, no
 export const heartbeatInput = z.strictObject({
   /** Whole-PC draw from nvidia-smi (or a CPU estimate), in watts. */
   watts: z.int().min(1).max(5000).optional(),
+  /** "nvidia-smi" (measured) or "estimated" (CPU mode, declared by the owner). */
+  wattsSource: z.enum(["nvidia-smi", "estimated"]).optional(),
   gpuModel: z.string().trim().min(1).max(128).optional(),
   vramMb: z.int().min(0).max(1_048_576).optional(),
   /** Self-reported until verification (phase 6) can check it; capped. */
@@ -63,6 +65,8 @@ export const heartbeatInput = z.strictObject({
 });
 
 export interface HeartbeatReply {
+  /** The node this token belongs to. The agent pins it and refuses tasks for any other. */
+  nodeId: string;
   status: NodeRow["status"];
   paused: boolean;
   canWork: boolean;
@@ -74,13 +78,17 @@ export interface HeartbeatReply {
 export async function heartbeat(db: Db, node: NodeRow, input: z.infer<typeof heartbeatInput>, now: Date): Promise<HeartbeatReply> {
   const patch: Partial<typeof nodes.$inferInsert> = { lastSeenAt: now };
   if (node.status === "pending" || node.status === "offline") patch.status = "online";
-  if (input.watts) patch.measuredWatts = nextMeasuredWatts(node.measuredWatts, input.watts);
+  if (input.watts) {
+    patch.measuredWatts = nextMeasuredWatts(node.measuredWatts, input.watts);
+    patch.wattsEstimated = input.wattsSource === "estimated";
+  }
   if (input.gpuModel) patch.gpuModel = input.gpuModel;
   if (input.vramMb !== undefined) patch.vramMb = input.vramMb;
   if (input.benchmarkScore) patch.benchmarkScore = input.benchmarkScore;
   const [updated] = await db.update(nodes).set(patch).where(eq(nodes.id, node.id)).returning();
   const reason = unavailableReason(toNodeView(updated!), now);
   return {
+    nodeId: updated!.id,
     status: updated!.status,
     paused: updated!.paused,
     canWork: reason === null,
@@ -215,6 +223,20 @@ async function leasedFragment(db: Q, nodeId: string, fragmentId: string, attempt
   return row;
 }
 
+/** A power reading sent with a fragment result (X-Power-Watts / X-Power-Source). */
+export interface PowerReport {
+  watts: number;
+  source: "nvidia-smi" | "estimated";
+}
+
+export function parsePowerHeaders(headers: Headers): PowerReport | null {
+  const watts = Number(headers.get("x-power-watts"));
+  const source = headers.get("x-power-source");
+  if (!Number.isInteger(watts) || watts < 1 || watts > 5000) return null;
+  if (source !== "nvidia-smi" && source !== "estimated") return null;
+  return { watts, source };
+}
+
 export interface CompleteReply {
   /** False if another copy finished the piece first. The owner is still paid. */
   accepted: boolean;
@@ -229,7 +251,7 @@ export interface CompleteReply {
 export async function completeFragment(
   db: Db,
   node: NodeRow,
-  args: { fragmentId: string; attempt: number; sha256: string; body: Uint8Array; now: Date; dataKey: Buffer; ipSecret: string },
+  args: { fragmentId: string; attempt: number; sha256: string; body: Uint8Array; now: Date; dataKey: Buffer; ipSecret: string; power?: PowerReport | null },
 ): Promise<CompleteReply> {
   if (!/^[0-9a-f]{64}$/.test(args.sha256) || sha256Hex(args.body) !== args.sha256) {
     throw new CoordinatorError(400, "digest_mismatch", "Output doesn't match its sha256.");
@@ -243,7 +265,18 @@ export async function completeFragment(
     throw new CoordinatorError(422, "bad_output", "The output isn't valid for this workload.");
   }
 
-  const view = toNodeView(node);
+  // The reading taken while this fragment ran updates the node's watts first,
+  // so the owner is paid for the electricity this work actually drew.
+  let payNode = node;
+  if (args.power) {
+    const [updated] = await db
+      .update(nodes)
+      .set({ measuredWatts: nextMeasuredWatts(node.measuredWatts, args.power.watts), wattsEstimated: args.power.source === "estimated" })
+      .where(eq(nodes.id, node.id))
+      .returning();
+    if (updated) payNode = updated;
+  }
+  const view = toNodeView(payNode);
   const pay = fragmentPay(view, f.estGpuSeconds);
 
   return db.transaction(async (tx) => {

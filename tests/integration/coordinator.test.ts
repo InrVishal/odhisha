@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import * as H from "@/lib/api/handlers";
@@ -15,6 +16,7 @@ import {
   beat,
   body,
   complete,
+  embeddingsFor,
   harness,
   ist,
   jsonReq,
@@ -483,5 +485,47 @@ describe("scheduler tick", () => {
     const second = await runTick(h.db, h.clock.now(), "s");
     expect(first.leasesExpired + first.nodesOffline).toBeGreaterThan(0);
     expect(second).toMatchObject({ leasesExpired: 0, nodesOffline: 0, backupsStarted: 0, deadlinesMissed: 0, quotesExpired: 0, jobsPurged: 0 });
+  });
+});
+
+describe("agent telemetry (phase 4 contract)", () => {
+  it("the heartbeat returns the node's own id, and CPU-mode watts are flagged as estimated", async () => {
+    const owner = await makeUser(h.db, "o@example.in");
+    const n = await registerNode(h, owner, { gpuClass: "cpu" });
+    const hb = await body<{ nodeId: string }>(await beat(h, n.token, { watts: 65, wattsSource: "estimated" }));
+    expect(hb.nodeId).toBe(n.nodeId);
+    const [row] = await h.db.select().from(nodes).where(eq(nodes.id, n.nodeId));
+    expect(row!.measuredWatts).toBe(65);
+    expect(row!.wattsEstimated).toBe(true);
+  });
+
+  it("a power reading sent with a result updates the node's watts before the owner is paid", async () => {
+    const owner = await makeUser(h.db, "o@example.in");
+    const buyer = await makeUser(h.db, "b@example.in");
+    const a = await registerNode(h, owner);
+    await beat(h, a.token, { watts: 300, wattsSource: "nvidia-smi" });
+    await quoteAndConfirm(buyer, 10);
+    const l = (await lease(h, a.token))!;
+    const out = embeddingsFor(l);
+    const res = await H.completeHandler(
+      new Request(`https://nightshift.test/api/agent/fragments/${l.parsed.taskId}/complete`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${a.token}`,
+          "content-type": "application/json",
+          "x-lease-attempt": String(l.parsed.attempt),
+          "x-output-sha256": createHash("sha256").update(out).digest("hex"),
+          "x-power-watts": "400",
+          "x-power-source": "nvidia-smi",
+        },
+        body: new Uint8Array(out),
+      }),
+      h.deps,
+      l.parsed.taskId,
+    );
+    expect(res.status).toBe(200);
+    const [row] = await h.db.select().from(nodes).where(eq(nodes.id, a.nodeId));
+    expect(row!.measuredWatts).toBe(320); // 300 × 0.8 + 400 × 0.2
+    expect(row!.wattsEstimated).toBe(false);
   });
 });

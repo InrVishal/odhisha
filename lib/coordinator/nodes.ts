@@ -87,6 +87,8 @@ export interface PublicNode {
   benchmarkScore: number | null;
   defaultWatts: number;
   measuredWatts: number | null;
+  /** True when the watts are the owner's declared estimate (CPU mode). */
+  wattsEstimated: boolean;
   trustScore: number;
   tariffPaisePerKwh: number;
   ownerRatePaisePerHr: number;
@@ -110,6 +112,7 @@ export function toPublicNode(n: NodeRow, now: Date): PublicNode {
     benchmarkScore: n.benchmarkScore,
     defaultWatts: n.defaultWatts,
     measuredWatts: n.measuredWatts,
+    wattsEstimated: n.wattsEstimated,
     trustScore: n.trustScore,
     tariffPaisePerKwh: n.tariffPaisePerKwh,
     ownerRatePaisePerHr: n.ownerRatePaisePerHr,

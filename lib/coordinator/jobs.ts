@@ -109,6 +109,9 @@ export async function quoteJob(
   req: { workloadType: WorkloadType; gpuClass: NodeClass; params: unknown; items: InputItem[] },
 ): Promise<PublicJob> {
   const spec = WORKLOADS[req.workloadType];
+  // No pinned image means no agent can run it: refuse rather than take money
+  // for a job that would only end in a deadline refund.
+  if (!spec.image) throw new CoordinatorError(503, "workload_unavailable", `${spec.label} isn't available yet.`);
   const parsedParams = spec.params.safeParse(req.params);
   if (!parsedParams.success) throw new CoordinatorError(400, "bad_params", "Those settings aren't valid for this job type.");
   const params = parsedParams.data;

@@ -18,11 +18,11 @@ The copy describes the finished prototype. Each phase ticks off what it delivers
 - [x] **Phase 3:** Job data encrypted when stored; inputs and results deleted after 7 days (proof: `tests/unit/crypto.test.ts, tests/integration/coordinator.test.ts (data at rest and retention)`)
 - [x] **Phase 3:** Measured watts replace the class default once a node reports them; owners can set their own tariff and rate (proof: `tests/integration/coordinator.test.ts, tests/unit/scheduler.test.ts`)
 - [x] **Phase 3:** Owner payouts can never add up to more than the buyer's quote (proof: `tests/unit/scheduler.test.ts (property test)`)
-- [ ] **Phase 4:** The app asks for work (no inbound ports), stops outside the night window and on pause
-- [ ] **Phase 4:** Every task signed by us and checked by the app; unsigned tasks refused
-- [ ] **Phase 4:** Locked container: no internet, no file access, memory and time limits, deleted after each piece
+- [x] **Phase 4:** The app asks for work (no inbound ports), stops outside the night window and on pause (proof: `agent/tests/test_runner.py (pause, window, finish the current piece first)`)
+- [x] **Phase 4:** Every task signed by us and checked by the app; unsigned tasks refused (proof: `agent/tests/test_trust.py, tests/live/agent-preview.ts`)
+- [x] **Phase 4:** Locked container: no internet, no file access, memory and time limits, deleted after each piece (proof: `agent/tests/test_sandbox_docker.py (real containers), agent/tests/test_sandbox.py`)
 - [ ] **Phase 4:** Benchmark on join, normalised so an RTX 3060 scores 1000 (Time-Bank weighting depends on it)
-- [ ] **Phase 4:** CPU mode for laptops without an NVIDIA GPU
+- [x] **Phase 4:** CPU mode for laptops without an NVIDIA GPU (proof: `agent/tests/test_runner.py (CPU mode), tests/live/agent-preview.ts (CPU node)`)
 - [ ] **Phase 5:** Invoices (PDF) show the deadline refund line automatically
 - [ ] **Phase 5:** Owner earnings show electricity as its own line; owners see every piece their PC ran
 - [ ] **Phase 5:** Dashboard: download your data and delete your account; ledger keeps records without your email
@@ -32,7 +32,7 @@ The copy describes the finished prototype. Each phase ticks off what it delivers
 - [ ] **Phase 7:** GPU-on-EMI simulator (demo only, no lending)
 - [ ] **Phase 8:** Sentry error reports with personal details removed
 
-Done: 10 of 23.
+Done: 14 of 23.
 
 **Still open from you:** set `CONTACT_EMAIL` in Vercel so the privacy page can show a real address.
 

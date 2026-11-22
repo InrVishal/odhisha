@@ -2,16 +2,11 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { headers } from "next/headers";
 import { site } from "@/content/site";
+import { siteUrl } from "@/lib/site-url";
 import "./globals.css";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"], display: "swap" });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"], display: "swap" });
-
-function siteUrl(): URL {
-  if (process.env.SITE_URL) return new URL(process.env.SITE_URL);
-  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return new URL(`https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`);
-  return new URL("http://localhost:3000");
-}
 
 export const metadata: Metadata = {
   metadataBase: siteUrl(),
