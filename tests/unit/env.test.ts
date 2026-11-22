@@ -97,7 +97,7 @@ describe("parseEnv", () => {
   });
 
   it("accepts only an Ed25519 PKCS#8 key for COORDINATOR_SIGNING_KEY", () => {
-    const rsa = generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey.export({ format: "der", type: "pkcs8" }).toString("base64");
+    const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ format: "der", type: "pkcs8" }).toString("base64");
     expect(() => parseEnv({ ...devEnv, COORDINATOR_SIGNING_KEY: ED25519 })).not.toThrow();
     expect(issuesOf({ ...devEnv, COORDINATOR_SIGNING_KEY: rsa }).join()).toMatch(/Ed25519/);
     expect(issuesOf({ ...devEnv, COORDINATOR_SIGNING_KEY: Buffer.from("not a key").toString("base64") }).join()).toMatch(/Ed25519/);
