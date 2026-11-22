@@ -29,6 +29,20 @@ import { agentReq, beat, body, complete, harness, ist, jsonReq, lease, makeUser,
 
 const PORT = 3400;
 const BASE = `http://127.0.0.1:${PORT}`;
+
+/**
+ * Every request in part 1 goes to the `next start` process this script spawns
+ * on 127.0.0.1, which only serves plain HTTP. Loopback only; nothing leaves the
+ * machine, so TLS doesn't apply. Accepts a path or a full URL on BASE.
+ */
+function local(target: string, init?: RequestInit): Promise<Response> {
+  const url = new URL(target, BASE);
+  if (url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname) || url.port !== String(PORT)) {
+    throw new Error(`demo only talks to its own server on port ${PORT} (got ${url.origin})`);
+  }
+  // nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request -- loopback to the demo server spawned by this script
+  return fetch(url, init);
+}
 const t0 = Date.now();
 const log = (part: string, msg: string) => console.log(`${((Date.now() - t0) / 1000).toFixed(1).padStart(5)}s  [${part}] ${msg}`);
 const short = (id: string) => id.slice(0, 8);
@@ -105,10 +119,10 @@ async function waitFor<T>(fn: () => Promise<T | undefined> | T | undefined, what
 /** Real magic-link login: CSRF token → email form POST → link from the console transport → session cookie. */
 async function signIn(email: string, links: Map<string, string>): Promise<Jar> {
   const jar = new Jar();
-  const csrf = await fetch(`${BASE}/api/auth/csrf`);
+  const csrf = await local(`/api/auth/csrf`);
   jar.take(csrf);
   const { csrfToken } = (await csrf.json()) as { csrfToken: string };
-  const post = await fetch(`${BASE}/api/auth/signin/resend`, {
+  const post = await local(`/api/auth/signin/resend`, {
     method: "POST",
     redirect: "manual",
     headers: { "content-type": "application/x-www-form-urlencoded", cookie: jar.header(), origin: BASE },
@@ -116,14 +130,14 @@ async function signIn(email: string, links: Map<string, string>): Promise<Jar> {
   });
   jar.take(post);
   const link = await waitFor(() => links.get(email), `login link for ${email}`);
-  const cb = await fetch(link, { redirect: "manual", headers: { cookie: jar.header() } });
+  const cb = await local(link, { redirect: "manual", headers: { cookie: jar.header() } });
   jar.take(cb);
   if (!jar.header().includes("session-token")) throw new Error(`no session for ${email} (${cb.status})`);
   return jar;
 }
 
 async function api<T = Record<string, unknown>>(jar: Jar | null, method: string, p: string, json?: unknown): Promise<{ status: number; body: T }> {
-  const res = await fetch(BASE + p, {
+  const res = await local(p, {
     method,
     headers: {
       origin: BASE,
@@ -147,7 +161,7 @@ interface Agent {
 type Task = { taskId: string; jobId: string; nodeId: string; attempt: number; itemCount: number; inputSha256: string; exp: number; nonce: string };
 
 async function agentCall(a: Agent, p: string, init: { body?: BodyInit; headers?: Record<string, string> } = {}) {
-  const res = await fetch(BASE + p, {
+  const res = await local(p, {
     method: "POST",
     headers: { authorization: `Bearer ${a.token}`, "content-type": "application/json", ...init.headers },
     body: init.body ?? "{}",
@@ -176,14 +190,14 @@ async function partLive(): Promise<void> {
   log("live", `starting the built app on ${BASE} (in-memory Postgres, console email)`);
   const { proc, links } = startServer();
   try {
-    await waitFor(async () => ((await fetch(`${BASE}/api/health`)).ok ? true : undefined), "server");
+    await waitFor(async () => ((await local(`/api/health`)).ok ? true : undefined), "server");
     log("live", "server up: GET /api/health → 200");
 
     const owner = await signIn("owner@demo.nightshift.in", links);
     const buyer = await signIn("buyer@demo.nightshift.in", links);
     log("live", "owner and buyer signed in through the magic-link flow (session cookies)");
 
-    const pem = ((await (await fetch(`${BASE}/api/agent/signing-key`)).json()) as { publicKeyPem: string; kid: string }).publicKeyPem;
+    const pem = ((await (await local(`/api/agent/signing-key`)).json()) as { publicKeyPem: string; kid: string }).publicKeyPem;
     log("live", "agents pinned the coordinator's Ed25519 public key from /api/agent/signing-key");
 
     const agents: Agent[] = [];
@@ -263,7 +277,7 @@ async function partLive(): Promise<void> {
       }
     }
 
-    const res = await fetch(`${BASE}/api/jobs/${job.id}/results`, { headers: { cookie: buyer.header() } });
+    const res = await local(`/api/jobs/${job.id}/results`, { headers: { cookie: buyer.header() } });
     const results = (await res.json()) as { items: number[][] };
     const inOrder = results.items.every((v, i) => v[0] === fakeEmbed(texts[i]!)[0]);
     log("live", `results downloaded (${res.headers.get("content-disposition")}): ${results.items.length} embeddings × ${results.items[0]!.length} dims, input order kept: ${inOrder}`);
@@ -276,8 +290,8 @@ async function partLive(): Promise<void> {
 
     const peek = await api(null, "GET", `/api/jobs/${job.id}`);
     log("live", `no session → GET /api/jobs/${short(job.id)} → ${peek.status}`);
-    const cron1 = await fetch(`${BASE}/api/cron/tick`);
-    const cron2 = await fetch(`${BASE}/api/cron/tick`, { headers: { authorization: "Bearer demo-cron-secret-demo-cron-secret-demo" } });
+    const cron1 = await local(`/api/cron/tick`);
+    const cron2 = await local(`/api/cron/tick`, { headers: { authorization: "Bearer demo-cron-secret-demo-cron-secret-demo" } });
     log("live", `cron tick without CRON_SECRET → ${cron1.status}; with it → ${cron2.status} ${JSON.stringify(((await cron2.json()) as { report: unknown }).report)}`);
   } finally {
     proc.kill();
