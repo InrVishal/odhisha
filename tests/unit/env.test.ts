@@ -87,6 +87,11 @@ describe("parseEnv", () => {
     expect(env.AUTH_GOOGLE_ID).toBeUndefined();
   });
 
+  it.each(["preview", "production"])("refuses NODE_TLS_REJECT_UNAUTHORIZED=0 in %s (it would turn off certificate checks)", (vercelEnv) => {
+    expect(issuesOf({ ...prodEnv, VERCEL_ENV: vercelEnv, NODE_TLS_REJECT_UNAUTHORIZED: "0" }).join()).toMatch(/NODE_TLS_REJECT_UNAUTHORIZED/);
+    expect(issuesOf({ ...prodEnv, VERCEL_ENV: vercelEnv, NODE_TLS_REJECT_UNAUTHORIZED: "1" })).toEqual([]);
+  });
+
   it("requires both coordinator keys in preview and production, not in dev", () => {
     const noKeys: Record<string, string | undefined> = { ...prodEnv, COORDINATOR_SIGNING_KEY: undefined, DATA_ENCRYPTION_KEY: undefined };
     const issues = issuesOf(noKeys).join();

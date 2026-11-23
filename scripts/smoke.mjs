@@ -70,6 +70,17 @@ async function main() {
   ok(health.text === '{"status":"ok"}', `/api/health says only {"status":"ok"} (got ${health.text.slice(0, 80)})`);
   revealsNothing(health.text, health.res.headers, "/api/health");
 
+  // CORS: no page or API lets another site read it, even when asked by a hostile
+  // Origin. (Vercel's CDN adds "Access-Control-Allow-Origin: *" to public static
+  // files only, such as JS chunks, fonts and robots.txt, which hold no user data.)
+  const evil = { origin: "https://evil.example" };
+  for (const [p, method] of [["/", "GET"], ["/signin", "GET"], ["/dashboard", "GET"], ["/api/health", "GET"], ["/api/agent/signing-key", "GET"], ["/api/account/export", "GET"], ["/api/jobs/quote", "POST"], ["/api/jobs/quote", "OPTIONS"]]) {
+    const r = await get(p, { method, headers: evil, ...(method === "POST" ? { body: "{}" } : {}) });
+    const acao = r.res.headers.get("access-control-allow-origin");
+    const creds = r.res.headers.get("access-control-allow-credentials");
+    ok(acao === null && creds === null, `${method} ${p} with a hostile Origin sends no CORS allow headers (got ${acao ?? "none"}${creds ? `, credentials ${creds}` : ""})`);
+  }
+
   // Error pages.
   const missing = await get(`/no-such-page-${Date.now()}`);
   ok(missing.res.status === 404, "an unknown page is a 404");

@@ -130,6 +130,8 @@ Nothing below is ever `NEXT_PUBLIC_`: env validation refuses secret-looking publ
 | `DATA_ENCRYPTION_KEY` | wraps per-piece job keys; seals TOTP secrets | yes | yes | not rotated in place yet: changing it makes stored job data (≤ 7 days) and admin authenticators unreadable. Rotate after a quiet week, then reset admin authenticators |
 | `ADMIN_EMAILS` | second admin key | yes | personal data | edit in Vercel, redeploy |
 | `ADMIN_ALERT_EMAIL` | where security alerts go (default: `ADMIN_EMAILS`; previews: none) | yes | personal data | — |
+| `PREVIEW_EMAIL_ALLOWLIST` | previews only: the only addresses magic links go to (empty: previews send no login mail, so scanners can't make them send any) | yes | personal data | — |
+| `NODE_TLS_REJECT_UNAUTHORIZED` | never set it; `0` (certificate checks off) is refused in preview and production | — | no | — |
 | `SYBIL_CHECKER_RULES` | `enforce` (production must) or `report` (previews) | yes | no | — |
 | `CONTACT_EMAIL`, `SITE_URL`, `DEMO_MODE`, `APP_ENV` | privacy page, metadata, demo banner, environment | yes | no | — |
 | `SENTRY_DSN` | reserved; the Sentry SDK isn't installed yet | yes | no | — |

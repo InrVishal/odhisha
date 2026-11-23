@@ -15,12 +15,12 @@ Every suite below runs in CI (`.github/workflows/ci.yml`) and must pass before a
 | 5 | End-to-end (Playwright: Chromium, Firefox, WebKit, mobile) | `npm run build && npm run test:e2e` | ✅ site flows; full job flow ⏳ phase 5 |
 | 6 | Accessibility (axe-core on every page, zero serious/critical) + keyboard-only | `npm run build && npm run test:a11y` | ✅ |
 | 7 | Lighthouse CI (90+ every category, median of 3) | `npx @lhci/cli@0.16.1 autorun --config=lighthouserc.cjs` (set `LHCI_BASE_URL`) | ✅ configured, see notes |
-| 7 | k6 load (p95 < 300 ms at 200 VUs on quote, lease, heartbeat, hand-in) | `ADMIN_URL=<local postgres> bash tools/load/prepare-db.sh 200 load-seed.json`, start the build with `load.env`, then `k6 run -e BASE_URL=... -e SEED_FILE=load-seed.json tools/load/k6-load.js` | ✅ CI job 9 |
+| 7 | k6 load: 200 VUs for 3 min on a local build and Postgres (never the preview or production, so no free-tier quota is used). Pass: p95 < 300 ms on quote, lease, heartbeat and hand-in counting **successful responses only**, < 1% failed requests, zero 429s and zero 5xx per endpoint (pacing keeps every user under every limit). Judged on 3 app processes (as Vercel spreads load over instances); one process is also run and reported, not judged | `ADMIN_URL=<local postgres> bash tools/load/prepare-db.sh 200 load-seed.json && bash tools/load/run.sh 3 k6-summary.json` (needs `./k6`) | CI job 9 |
 | 8 | Semgrep (rules tested with `semgrep --test tools/semgrep`) + CodeQL + gitleaks + npm audit + OSV + pip-audit + Trivy (workload images) + zizmor (workflows) | CI job `4 · Security scans` | ✅ |
 | 8 | Bundle scan: no secrets, server-only names or source maps in anything a browser downloads | `npm run build && node scripts/scan-bundle.mjs` | ✅ |
 | 8 | Smoke test (exposed files, source maps, admin 404s, error pages): build, every preview, production after deploy | `node scripts/smoke.mjs <url>` | ✅ |
 | 8 | Database exposure (no Data API/GraphQL, TLS only, roles without powers) on each preview branch | `tests/live/db-exposure.ts` | ✅ |
-| 8 | OWASP ZAP full (active) scan against the preview | CI job `7 · OWASP ZAP full scan` | ✅ |
+| 8 | OWASP ZAP full (active) scan against this run's preview and its own Neon branch only (the job refuses any other target). `.zap/rules.tsv` sets injection/XSS/SSRF/traversal rules to FAIL; every WARN has a reviewed reason. Summary in the log, no report upload | CI job `7 · OWASP ZAP full scan` | CI |
 | 9 | Banned-words copy check (source, COPY.md sync, and the built site) | `npm run build && npm run copy:check` | ✅ |
 | – | Live security-header check | `node scripts/check-headers.mjs <url>` | ✅ |
 
@@ -191,3 +191,6 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres npm run t
 | Spoofed `x-middleware-subrequest` or role headers | Ignored | n/a | 404 (`admin.test.ts`, `smoke.mjs`) |
 | Reading the database directly (REST, GraphQL, SQL from the app) | Not possible | n/a | No Data API/GraphQL, no user SQL, least-privilege roles (`db-exposure.ts`, Semgrep, `db-roles.test.ts`) |
 | Fetching `/.env`, `/.git/config`, source maps | 404 | n/a | `smoke.mjs` on the build, previews and production |
+| Another site reading a page or API (CORS) | No allow headers, even for a hostile Origin | n/a | `smoke.mjs` |
+| Malformed Server Action payloads (a number where the form goes) | Validation error, not a 500 | n/a | `form.test.ts`; ZAP 30003 |
+| Making the preview send email (scanners, strangers) | Dropped unless on `PREVIEW_EMAIL_ALLOWLIST` | n/a | `email.test.ts` |

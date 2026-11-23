@@ -16,6 +16,7 @@
  * - nobody but the owner can create objects in the public schema.
  * Prints role and extension names only, never URLs or passwords.
  */
+import { checkServerIdentity, type TLSSocket } from "node:tls";
 import pg from "pg";
 
 const OWNER = process.env.PREVIEW_DATABASE_URL ?? "";
@@ -57,8 +58,17 @@ async function main() {
 
     // Neon's proxy ends TLS, so the database itself sees a plain connection from the
     // proxy (pg_stat_ssl says no). What matters is our side: the socket to Neon.
-    const sock = (db as unknown as { connection: { stream: { encrypted?: boolean; authorized?: boolean; getProtocol?: () => string | null } } }).connection.stream;
-    check(sock.encrypted === true && sock.authorized === true, `this connection is TLS (${sock.getProtocol?.() ?? "no TLS"}), with the server certificate verified`);
+    // Same settings as the app's pg path with sslmode=verify-full: rejectUnauthorized
+    // (chain checked against the system CAs) plus Node's host-name check.
+    const sock = (db as unknown as { connection: { stream: TLSSocket } }).connection.stream;
+    const host = new URL(OWNER).hostname;
+    const cert = typeof sock.getPeerCertificate === "function" ? sock.getPeerCertificate() : undefined;
+    const hostOk = cert !== undefined && checkServerIdentity(host, cert) === undefined;
+    check(
+      sock.encrypted === true && sock.authorized === true && hostOk,
+      `TLS ${sock.getProtocol?.() ?? "none"} to ${host.replace(/^[^.]+/, "<endpoint>")}: certificate chain verified (authorized=${String(sock.authorized)}), host name matches the certificate (${hostOk ? "yes" : "no"}), rejectUnauthorized=true, i.e. sslmode=verify-full`,
+    );
+    check(process.env.NODE_TLS_REJECT_UNAUTHORIZED !== "0", "NODE_TLS_REJECT_UNAUTHORIZED is not 0 (certificate checks are on for every connection)");
 
     const powers = await db.query<{ rolname: string; rolsuper: boolean; rolcreaterole: boolean; rolcreatedb: boolean; rolreplication: boolean; rolbypassrls: boolean; rolcanlogin: boolean }>(
       "select rolname, rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls, rolcanlogin from pg_roles where rolname in ('app_runtime', 'readonly') order by 1",
@@ -101,6 +111,26 @@ async function main() {
       await c.end();
     }
   }
+
+  // The deployed app's own path: lib/db/client's createDb on the pooled runtime
+  // URL picks Neon's serverless driver over wss:// (useSecureWebSocket), and
+  // Node's WebSocket checks the certificate and host name (no option to skip).
+  const pooled = process.env.RUNTIME_DATABASE_URL_POOLED ?? "";
+  if (pooled) {
+    const { createDb, rows } = await import("../../lib/db/client");
+    const { sql } = await import("drizzle-orm");
+    const { neonConfig } = await import("@neondatabase/serverless");
+    const h = await createDb(pooled);
+    try {
+      const me = await rows<{ u: string }>(h.db, sql`select current_user as u`);
+      check(
+        h.driver === "neon" && neonConfig.useSecureWebSocket === true && me[0]?.u === "app_runtime",
+        `app path: driver=${h.driver}, wss:// (useSecureWebSocket=${String(neonConfig.useSecureWebSocket)}), certificate and host name checked by Node's WebSocket; logged in as ${me[0]?.u ?? "?"}`,
+      );
+    } finally {
+      await h.close();
+    }
+  } else check(false, "RUNTIME_DATABASE_URL_POOLED is set (the app's own connection path)");
 
   if (failed) {
     console.error(`[db] ${failed} check(s) failed`);

@@ -274,7 +274,13 @@ test.describe("signed in (preview)", () => {
     // First visit: set up the second factor (as a person would, from the setup key on the page).
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("Set up your authenticator");
     await noSeriousA11yIssues(page);
-    const secret = (await page.getByTestId("totp-secret").innerText()).replace(/\s+/g, "");
+    const shown = (await page.getByTestId("totp-secret").innerText()).trim();
+    const secret = shown.replace(/\s+/g, "");
+    // This run's own secret (made just now on the throwaway preview database, for
+    // the CI-only admin), but kept out of the public CI log even in a failure
+    // message: GitHub masks both spellings from here on. No traces, screenshots
+    // or reports are uploaded from this job.
+    if (process.env.GITHUB_ACTIONS) process.stdout.write(`::add-mask::${secret}\n::add-mask::${shown}\n`);
     await page.getByLabel("Code from the app").fill("000000");
     await page.getByRole("button", { name: "Continue" }).click();
     await expect(page.locator("main#main").getByRole("alert")).toContainText("That code didn't work");

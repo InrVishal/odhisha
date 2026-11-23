@@ -1,41 +1,78 @@
 /**
  * k6 load test: 200 virtual users, each an owner whose agent heartbeats,
  * leases, works and hands in, and a buyer who quotes and confirms jobs (so
- * there is real work to lease). Pass: p95 under 300 ms on quote, lease,
- * heartbeat and hand-in, fewer than 1% failed requests, 99% of checks ok.
+ * there is real work to lease).
  *
- *   k6 run -e BASE_URL=http://127.0.0.1:3400 -e SEED_FILE=load-seed.json tools/load/k6-load.js
+ *   k6 run -e BASE_URL=http://127.0.0.1:3400 -e SEED_FILE=$PWD/load-seed.json tools/load/k6-load.js
  *
- * Pacing: one round every ~6 s per user (an agent polls every 10 s; this is
- * busier), which stays under the per-account limits (10 job submits a
- * minute), so the numbers are for served requests, not 429s.
+ * BASE_URLS (comma-separated) spreads the users over several app processes,
+ * the way Vercel spreads requests over instances; each user sticks to one.
+ *
+ * Pass (only the measured "agents" scenario counts):
+ * - p95 under 300 ms on quote, lease, heartbeat and hand-in, counting
+ *   successful responses only (a fast 429 or 500 must not make p95 look good);
+ * - under 1% of requests fail (any non-2xx, or no response);
+ * - no 429 anywhere: pacing keeps every user under every limit, so a 429
+ *   means a limit fired where it shouldn't (counted per endpoint);
+ * - no 5xx.
+ *
+ * Pacing: one round every ~6.5 s per user (a real agent polls every 10 s; this
+ * is busier). At least 6.2 s between rounds keeps confirm under its limit of
+ * 10 job submits a minute, so the numbers are for served requests, not 429s.
  */
 import { check, sleep } from "k6";
 import crypto from "k6/crypto";
 import { SharedArray } from "k6/data";
 import encoding from "k6/encoding";
 import http from "k6/http";
+import { Counter } from "k6/metrics";
 
 const seed = new SharedArray("seed", () => JSON.parse(open(__ENV.SEED_FILE)));
-const BASE = __ENV.BASE_URL;
+const BASES = (__ENV.BASE_URLS || __ENV.BASE_URL).split(",");
+const ENDPOINTS = ["heartbeat", "quote", "confirm", "lease", "hand-in"];
+
+const rateLimited = new Counter("responses_429");
+const serverErrors = new Counter("responses_5xx");
+const otherFailures = new Counter("responses_other_failed");
+
+const perEndpoint = {};
+for (const name of ENDPOINTS) {
+  perEndpoint[`responses_429{name:${name},scenario:agents}`] = ["count==0"];
+  perEndpoint[`responses_5xx{name:${name},scenario:agents}`] = ["count==0"];
+  perEndpoint[`responses_other_failed{name:${name},scenario:agents}`] = ["count>=0"];
+}
+const p95 = {};
+for (const name of ["quote", "lease", "heartbeat", "hand-in"]) {
+  // Successful responses only.
+  p95[`http_req_duration{name:${name},scenario:agents,expected_response:true}`] = ["p(95)<300"];
+  // All responses, reported (not judged) for comparison.
+  p95[`http_req_duration{name:${name},scenario:agents}`] = ["p(95)>=0"];
+}
 
 export const options = {
   scenarios: {
-    // 20 s at 20 users first, so the server's first requests (route compiles,
+    // 20 s at 20 users first, so the server's first requests (route loads,
     // pool connections) don't count. Only the "agents" scenario is measured.
     warmup: { executor: "constant-vus", vus: 20, duration: "20s", gracefulStop: "5s" },
     agents: { executor: "constant-vus", vus: Number(__ENV.VUS || 200), duration: __ENV.DURATION || "3m", startTime: "25s", gracefulStop: "30s" },
   },
   thresholds: {
-    "http_req_duration{name:quote,scenario:agents}": ["p(95)<300"],
-    "http_req_duration{name:lease,scenario:agents}": ["p(95)<300"],
-    "http_req_duration{name:heartbeat,scenario:agents}": ["p(95)<300"],
-    "http_req_duration{name:hand-in,scenario:agents}": ["p(95)<300"],
-    http_req_failed: ["rate<0.01"],
-    checks: ["rate>0.99"],
+    ...p95,
+    "http_req_failed{scenario:agents}": ["rate<0.01"],
+    "checks{scenario:agents}": ["rate>0.99"],
+    ...perEndpoint,
   },
   summaryTrendStats: ["avg", "med", "p(90)", "p(95)", "p(99)", "max", "count"],
 };
+
+/** Counts each failed response by kind, tagged with its endpoint. */
+function tally(res, name) {
+  const tags = { name };
+  if (res.status === 429) rateLimited.add(1, tags);
+  else if (res.status >= 500) serverErrors.add(1, tags);
+  else if (res.status === 0 || res.status >= 300) otherFailures.add(1, tags);
+  return res;
+}
 
 /** A deterministic "embedding" per text, so two PCs checking each other agree. */
 function vec(text) {
@@ -47,32 +84,36 @@ function vec(text) {
 
 export default function round() {
   const me = seed[(__VU - 1) % seed.length];
+  const BASE = BASES[(__VU - 1) % BASES.length];
   const agent = { authorization: `Bearer ${me.token}`, "content-type": "application/json", "x-real-ip": me.ip };
   const buyer = { cookie: me.cookie, origin: BASE, "content-type": "application/json", "x-real-ip": me.ip };
 
-  const hb = http.post(`${BASE}/api/agent/heartbeat`, JSON.stringify({ watts: 65, wattsSource: "estimated", deviceId: me.deviceId }), { headers: agent, tags: { name: "heartbeat" } });
+  const hb = tally(http.post(`${BASE}/api/agent/heartbeat`, JSON.stringify({ watts: 65, wattsSource: "estimated", deviceId: me.deviceId }), { headers: agent, tags: { name: "heartbeat" } }), "heartbeat");
   check(hb, { "heartbeat 200": (r) => r.status === 200 });
 
   const texts = [0, 1, 2].map((k) => `vu ${__VU} round ${__ITER} line ${k}: my order came late, please help with a refund`);
-  const q = http.post(`${BASE}/api/jobs/quote`, JSON.stringify({ workloadType: "text_embeddings", gpuClass: "cpu", params: {}, texts }), { headers: buyer, tags: { name: "quote" } });
+  const q = tally(http.post(`${BASE}/api/jobs/quote`, JSON.stringify({ workloadType: "text_embeddings", gpuClass: "cpu", params: {}, texts }), { headers: buyer, tags: { name: "quote" } }), "quote");
   check(q, { "quote 201": (r) => r.status === 201 });
   if (q.status === 201) {
     const id = q.json("job.id");
-    const c = http.post(`${BASE}/api/jobs/${id}/confirm`, null, { headers: buyer, tags: { name: "confirm" } });
+    const c = tally(http.post(`${BASE}/api/jobs/${id}/confirm`, null, { headers: buyer, tags: { name: "confirm" } }), "confirm");
     check(c, { "confirm 200": (r) => r.status === 200 });
   }
 
-  const l = http.post(`${BASE}/api/agent/lease`, "{}", { headers: agent, tags: { name: "lease" } });
+  const l = tally(http.post(`${BASE}/api/agent/lease`, "{}", { headers: agent, tags: { name: "lease" } }), "lease");
   check(l, { "lease 200": (r) => r.status === 200 });
   if (l.status === 200 && l.json("task")) {
     const task = JSON.parse(l.json("task.task"));
     const input = JSON.parse(encoding.b64decode(l.json("input"), "std", "s"));
     const out = JSON.stringify({ items: input.texts.map(vec) });
-    const done = http.post(`${BASE}/api/agent/fragments/${task.taskId}/complete`, out, {
-      headers: { ...agent, "x-lease-attempt": String(task.attempt), "x-output-sha256": crypto.sha256(out, "hex") },
-      tags: { name: "hand-in" },
-    });
+    const done = tally(
+      http.post(`${BASE}/api/agent/fragments/${task.taskId}/complete`, out, {
+        headers: { ...agent, "x-lease-attempt": String(task.attempt), "x-output-sha256": crypto.sha256(out, "hex") },
+        tags: { name: "hand-in" },
+      }),
+      "hand-in",
+    );
     check(done, { "hand-in 200": (r) => r.status === 200 });
   }
-  sleep(5 + Math.random());
+  sleep(6.2 + Math.random() * 0.6);
 }

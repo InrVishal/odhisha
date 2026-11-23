@@ -259,9 +259,8 @@ jobs:
           NODE_ENV=production EMAIL_TRANSPORT=console RATE_LIMIT_BACKEND=memory nohup node node_modules/next/dist/bin/next start -p 3500 > smoke-server.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:3500/api/health >/dev/null && break; sleep 1; done
           node scripts/smoke.mjs http://127.0.0.1:3500
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: failure()
-        with: { name: playwright-build, path: "playwright-report/\ntest-results/", retention-days: 7 }
+      # No Playwright report/trace/screenshot upload anywhere: this repo is public,
+      # and traces hold page contents and cookies. Failures are read from the log.
 
   load:
     name: 9 · Load test (k6, 200 virtual users, p95 < 300 ms)
@@ -295,19 +294,26 @@ jobs:
           curl -sSfL -o k6-checksums.txt "$BASE/k6-v${K6_VERSION}-checksums.txt"
           grep " $F\$" k6-checksums.txt | sha256sum -c -
           tar -xzf "$F" --strip-components=1 "k6-v${K6_VERSION}-linux-amd64/k6"
-      - name: Database (migrated by the owner role; the app connects as app_runtime) and 200 seeded accounts
+      # Runs on this runner only: the app and its database are local. The preview
+      # and production are never load-tested, so no Vercel, Neon or Upstash quota
+      # is used, and per-IP limits (which Vercel's real client IP would trip,
+      # since every virtual user comes from this one runner) don't skew results.
+      - name: "Capacity of ONE app process (reported, not judged): 200 virtual users for 3 minutes"
         env:
           ADMIN_URL: postgres://postgres:postgres@localhost:5432/postgres
-        run: bash tools/load/prepare-db.sh 200 load-seed.json
-      - name: Production build, then 200 virtual users for 3 minutes
         run: |
-          set -a; . ./load.env; set +a
-          NODE_ENV=production EMAIL_TRANSPORT=console RATE_LIMIT_BACKEND=memory nohup node node_modules/next/dist/bin/next start -p 3400 > load-server.log 2>&1 &
-          for i in $(seq 1 60); do curl -sf http://127.0.0.1:3400/api/health >/dev/null && break; sleep 1; done
-          ./k6 run --summary-export k6-summary.json -e BASE_URL=http://127.0.0.1:3400 -e SEED_FILE="$PWD/load-seed.json" tools/load/k6-load.js
+          echo "runner: $(nproc) vCPUs"
+          bash tools/load/prepare-db.sh 200 load-seed.json
+          bash tools/load/run.sh 1 k6-summary-1-process.json --no-thresholds
+      - name: "Judged run, 3 app processes (like 3 Vercel instances): 200 virtual users for 3 minutes"
+        env:
+          ADMIN_URL: postgres://postgres:postgres@localhost:5432/postgres
+        run: |
+          bash tools/load/prepare-db.sh 200 load-seed.json
+          bash tools/load/run.sh 3 k6-summary.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
-        with: { name: k6-summary, path: k6-summary.json, retention-days: 14 }
+        with: { name: k6-summary, path: "k6-summary*.json", retention-days: 14 }
 
   preview:
     name: Preview deploy (own Neon branch, as app_runtime) + live agent test + signed-in dashboards
@@ -320,6 +326,8 @@ jobs:
       packages: read
     outputs:
       url: ${{ steps.deploy.outputs.url }}
+      neon_branch: ${{ github.event_name == 'pull_request' && format('preview/pr-{0}', github.event.number) || format('ci/main-{0}', github.run_id) }}
+      neon_branch_id: ${{ steps.neon.outputs.branch_id }}
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
@@ -440,21 +448,47 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: zaproxy/action-full-scan@3c58388149901b9a03b7718852c5ba889646c27c # v0.13.0
-        with:
-          target: ${{ needs.preview.outputs.url }}
-          rules_file_name: .zap/rules.tsv
-          # -I: only FAIL rules (high) break the build; WARNs are reported.
-          # -m 5: spider for up to 5 minutes. -j: also the AJAX spider.
-          cmd_options: >-
-            -a -j -I -m 5
-            -z "-config replacer.full_list(0).description=bypass
-            -config replacer.full_list(0).enabled=true
-            -config replacer.full_list(0).matchtype=REQ_HEADER
-            -config replacer.full_list(0).matchstr=x-vercel-protection-bypass
-            -config replacer.full_list(0).replacement=${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}"
-          allow_issue_writing: false
-          fail_action: true
+      # Active attacks go to this run's preview and its own Neon branch only.
+      - name: Target is this run's preview deployment and its own Neon branch (never production)
+        env:
+          TARGET: ${{ needs.preview.outputs.url }}
+          BRANCH: ${{ needs.preview.outputs.neon_branch }}
+          BRANCH_ID: ${{ needs.preview.outputs.neon_branch_id }}
+        run: |
+          host=$(node -e 'process.stdout.write(new URL(process.env.TARGET).hostname)')
+          echo "ZAP target: https://$host (a per-deployment preview URL from vercel deploy without --prod)"
+          echo "Its database: Neon branch '$BRANCH' ($BRANCH_ID), created for this run from production's schema; production uses the main branch"
+          case "$host" in
+            nightshift-ten-iota.vercel.app|*nightshift.in) echo "refusing: that is production"; exit 1 ;;
+            nightshift-*-inrvishals-projects.vercel.app) ;;
+            *) echo "refusing: not a preview deployment URL"; exit 1 ;;
+          esac
+          case "$BRANCH" in
+            preview/pr-*|ci/main-*) ;;
+            *) echo "refusing: not a per-PR or per-run Neon branch"; exit 1 ;;
+          esac
+      # Run directly (digest-pinned image) rather than through the action, so
+      # .zap/rules.tsv is really applied (-c; the action dropped it) and no
+      # report is uploaded (the repo is public); a summary goes to the log.
+      - name: ZAP full scan (spider + AJAX spider + active attacks), rules from .zap/rules.tsv
+        env:
+          TARGET: ${{ needs.preview.outputs.url }}
+          BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          ZAP_IMAGE: ghcr.io/zaproxy/zaproxy:2.17.0@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af
+        run: |
+          mkdir -p zap && cp .zap/rules.tsv zap/rules.tsv && chmod -R a+rwX zap
+          # -c: rule levels; -I: WARNs don't fail, FAILs do; -a: alpha rules too;
+          # -j: AJAX spider; -m 5: spider for up to 5 minutes.
+          set +e
+          docker run --rm --network=host -v "$PWD/zap:/zap/wrk:rw" "$ZAP_IMAGE" zap-full-scan.py \
+            -t "$TARGET" -c rules.tsv -J report.json -a -j -I -m 5 \
+            -z "-config replacer.full_list(0).description=bypass -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=x-vercel-protection-bypass -config replacer.full_list(0).replacement=$BYPASS"
+          code=$?
+          set -e
+          node scripts/zap-summary.mjs zap/report.json
+          rm -rf zap
+          echo "zap-full-scan exit code: $code (0 = no FAIL rule fired)"
+          exit "$code"
 
   lighthouse:
     name: 8 · Lighthouse (90+ on every category)

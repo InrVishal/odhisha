@@ -1,5 +1,6 @@
 "use server";
 
+import { formField } from "@/lib/form";
 import { headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 import { z } from "zod";
@@ -33,7 +34,7 @@ export async function submitAdminCodeAction(_prev: CodeState, formData: FormData
   if (access.state === "stale_login") return { error: STALE };
   const limited = await checkLimit("adminMfaUser", access.userId);
   if (!limited.success) return { error: "Too many tries. Wait 15 minutes and try again." };
-  const parsed = codeInput.safeParse({ code: formData.get("code") });
+  const parsed = codeInput.safeParse({ code: formField(formData, "code") });
   if (!parsed.success) return { error: "Enter the 6-digit code from your authenticator app." };
   const env = getEnv();
   const result = await submitAdminCode(

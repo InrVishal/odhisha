@@ -53,4 +53,4 @@ load.env
 k6-summary.json
 *.server.log
 smoke-server.log
-load-server.log
+load-server*.log

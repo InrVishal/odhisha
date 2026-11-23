@@ -1,5 +1,6 @@
 "use server";
 
+import { formField } from "@/lib/form";
 import { AuthError } from "next-auth";
 import { headers } from "next/headers";
 import { z } from "zod";
@@ -16,7 +17,7 @@ const emailSchema = z.strictObject({
 });
 
 export async function signInWithEmail(_prev: SignInState, formData: FormData): Promise<SignInState> {
-  const parsed = emailSchema.safeParse({ email: formData.get("email") });
+  const parsed = emailSchema.safeParse({ email: formField(formData, "email") });
   if (!parsed.success) return { error: "That email address doesn't look right." };
 
   const r = await checkLimit("loginIp", clientIp(await headers()));

@@ -101,6 +101,14 @@ export const envSchema = z
     ADMIN_EMAILS: emailList,
     /** Where security alerts go (role changes, second-factor setup). Unset: every address on ADMIN_EMAILS. */
     ADMIN_ALERT_EMAIL: emailList,
+    /**
+     * Previews only: magic links go only to these addresses; any other address
+     * is dropped (the page still says "check your email"). Keeps scanners and
+     * strangers from making the preview send mail. Empty: previews send none.
+     */
+    PREVIEW_EMAIL_ALLOWLIST: emailList,
+    /** Node's switch that turns off TLS certificate checks. Refused when deployed. */
+    NODE_TLS_REJECT_UNAUTHORIZED: z.string().optional(),
 
     // Auth.js
     AUTH_SECRET: z.string().min(32, "must be at least 32 characters"),
@@ -214,6 +222,9 @@ export const envSchema = z
       }
       if (e.DATABASE_URL_READONLY && !dbTransportIsVerified(e.DATABASE_URL_READONLY)) {
         ctx.addIssue({ code: "custom", path: ["DATABASE_URL_READONLY"], message: "must use TLS with the certificate verified (a Neon host, or sslmode=verify-full)" });
+      }
+      if (e.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
+        ctx.addIssue({ code: "custom", path: ["NODE_TLS_REJECT_UNAUTHORIZED"], message: "must not be 0 in preview/production: it turns off certificate checks for every connection" });
       }
       if (e.EMAIL_TRANSPORT !== "resend") {
         ctx.addIssue({ code: "custom", path: ["EMAIL_TRANSPORT"], message: "must be 'resend' in preview/production" });
