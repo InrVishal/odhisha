@@ -8,7 +8,7 @@ import {
   priceJob,
   MIN_JOB_PRICE_PAISE,
 } from "@/lib/pricing";
-import { BASELINE_BENCHMARK_SCORE, clusterCostStandardSeconds, earnedStandardSeconds, formatStandardHours } from "@/lib/timebank";
+import { BASELINE_BENCHMARK_SCORE, creditCost, earnedStandardSeconds, formatStandardHours } from "@/lib/timebank";
 
 /**
  * Numbers in the copy that come from the pricing and Time-Bank engines.
@@ -43,9 +43,8 @@ export const copyValues: Record<string, string> = {
   perHour3060: formatPaise(allInPerGpuHourPaise(DEFAULT_WATTS.rtx3060, DEFAULT_TARIFF_PAISE_PER_KWH, DEFAULT_OWNER_RATE_PAISE_PER_HR)),
   perHour4070: formatPaise(allInPerGpuHourPaise(DEFAULT_WATTS.rtx4070, DEFAULT_TARIFF_PAISE_PER_KWH, DEFAULT_OWNER_RATE_PAISE_PER_HR)),
   perHour4090: formatPaise(allInPerGpuHourPaise(DEFAULT_WATTS.rtx4090, DEFAULT_TARIFF_PAISE_PER_KWH, DEFAULT_OWNER_RATE_PAISE_PER_HR)),
-  tbDouble: formatStandardHours(earnedStandardSeconds(HOUR, 2 * BASELINE_BENCHMARK_SCORE)),
   tbHostel: formatStandardHours(earnedStandardSeconds(6 * HOUR, BASELINE_BENCHMARK_SCORE)),
-  tbCluster: formatStandardHours(clusterCostStandardSeconds(Array(4).fill(BASELINE_BENCHMARK_SCORE), 3 * HOUR)),
+  tbCluster: formatStandardHours(creditCost([4 * 3 * HOUR])),
 };
 
 /** Replaces {name} with a value. Unknown names throw, so typos fail the build. */

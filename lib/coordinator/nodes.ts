@@ -1,4 +1,5 @@
 import { and, count, eq, isNull } from "drizzle-orm";
+import { checkRate } from "./verify";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
 import type { Db } from "@/lib/db/client";
@@ -70,6 +71,8 @@ export const updateNodeInput = z
     nightWindowEndMin: minuteOfDay,
     timezone: z.string().max(64).refine(isTimeZone, "Unknown time zone."),
     paused: z.boolean(),
+    /** Time-Bank: earn credits instead of compute pay for buyers' pieces. */
+    earnsCredits: z.boolean(),
   })
   .partial()
   .refine((v) => Object.keys(v).length > 0, "Nothing to change.");
@@ -95,6 +98,12 @@ export interface PublicNode {
   trustScore: number;
   checksPassed: number;
   checksFailed: number;
+  /** Buyers' pieces this PC has handed in. */
+  piecesDone: number;
+  /** Share of its pieces that get re-run on another PC right now (0.1–0.5). */
+  checkRate: number;
+  /** Time-Bank: buyers' pieces earn credits instead of compute pay. */
+  earnsCredits: boolean;
   tariffPaisePerKwh: number;
   ownerRatePaisePerHr: number;
   nightWindowStartMin: number;
@@ -122,6 +131,9 @@ export function toPublicNode(n: NodeRow, now: Date): PublicNode {
     trustScore: n.trustScore,
     checksPassed: n.checksPassed,
     checksFailed: n.checksFailed,
+    piecesDone: n.piecesDone,
+    checkRate: checkRate(n),
+    earnsCredits: n.earnsCredits,
     tariffPaisePerKwh: n.tariffPaisePerKwh,
     ownerRatePaisePerHr: n.ownerRatePaisePerHr,
     nightWindowStartMin: n.nightWindowStartMin,

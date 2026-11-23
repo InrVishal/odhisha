@@ -1,15 +1,16 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { audit } from "@/lib/audit";
 import type { Db } from "@/lib/db/client";
 import { benchmarkSamples, fragments, jobs, nodes, users } from "@/lib/db/schema";
 import { newDataKey } from "@/lib/security/envelope";
 import { sha256Hex } from "@/lib/security/signing";
-import { buildChallenge, checkChallenge, medianScore, SAMPLE_WINDOW, type ChallengeSpec } from "./challenge";
+import { buildChallenge, checkChallenge, type ChallengeSpec } from "./challenge";
 import { CLASS_SPECS } from "./classes";
 import type { Q } from "./lifecycle";
 import type { NodeRow } from "./nodes";
 import { leaseSeconds } from "./schedule";
 import { keyOwner, putBlob } from "./store";
+import { recordSample } from "./samples";
 import { applyCheck } from "./verification";
 import { encodeFragmentInput, estimateSeconds, WORKLOADS } from "./workloads";
 
@@ -24,13 +25,9 @@ async function ensureSystemUser(db: Q): Promise<void> {
   await db.insert(users).values({ id: SYSTEM_USER_ID, email: null }).onConflictDoNothing({ target: users.id });
 }
 
+/** When this PC was last sent a canary of either kind. */
 export async function lastChallengeAt(db: Q, nodeId: string): Promise<Date | null> {
-  const [row] = await db
-    .select({ at: jobs.createdAt })
-    .from(jobs)
-    .where(sql`${jobs.challenge} ->> 'nodeId' = ${nodeId}`)
-    .orderBy(desc(jobs.createdAt))
-    .limit(1);
+  const [row] = await db.select({ at: nodes.lastCanaryAt }).from(nodes).where(eq(nodes.id, nodeId)).limit(1);
   return row?.at ?? null;
 }
 
@@ -52,6 +49,7 @@ export async function createChallenge(
   const leaseUntil = new Date(now.getTime() + leaseSeconds(expected) * 1000);
   return db.transaction(async (tx) => {
     await ensureSystemUser(tx);
+    await tx.update(nodes).set({ lastCanaryAt: now }).where(eq(nodes.id, node.id));
     const stored: StoredChallenge = { ...spec, nodeId: node.id };
     const [job] = await tx
       .insert(jobs)
@@ -123,16 +121,7 @@ export async function settleChallenge(
     );
     return { ...result, score: null };
   }
-  const millis = Math.max(1, args.now.getTime() - args.startedAt.getTime());
-  await q.insert(benchmarkSamples).values({ nodeId: node.id, items: args.spec.items, millis });
-  const recent = await q
-    .select({ items: benchmarkSamples.items, millis: benchmarkSamples.millis })
-    .from(benchmarkSamples)
-    .where(eq(benchmarkSamples.nodeId, node.id))
-    .orderBy(desc(benchmarkSamples.createdAt), desc(benchmarkSamples.id))
-    .limit(SAMPLE_WINDOW);
-  const score = medianScore(recent);
-  if (score !== null) await q.update(nodes).set({ benchmarkScore: score }).where(and(eq(nodes.id, node.id)));
+  const score = await recordSample(q, node.id, args.spec.items, args.now.getTime() - args.startedAt.getTime());
   return { ...result, score };
 }
 

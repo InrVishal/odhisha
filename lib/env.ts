@@ -113,6 +113,13 @@ export const envSchema = z
     /** Canonical site URL for metadata, robots and sitemap. */
     SITE_URL: z.url().optional(),
 
+    /**
+     * Checks never go to a PC on the same device or network as the PC they
+     * check ("enforce"). "report" only flags it, for preview deployments
+     * where the test agents all run on one CI machine. Refused in production.
+     */
+    SYBIL_CHECKER_RULES: z.enum(["enforce", "report"]).default("enforce"),
+
     // Payments, UPI payouts and EMI are always simulated in this prototype.
     DEMO_MODE: z
       .enum(["true", "false"])
@@ -145,6 +152,10 @@ export const envSchema = z
         path: ["UPSTASH_REDIS_REST_URL"],
         message: "UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are required when RATE_LIMIT_BACKEND=upstash",
       });
+    }
+
+    if (e.APP_ENV === "production" && e.SYBIL_CHECKER_RULES !== "enforce") {
+      ctx.addIssue({ code: "custom", path: ["SYBIL_CHECKER_RULES"], message: "must be 'enforce' in production" });
     }
 
     if (deployed) {

@@ -6,7 +6,9 @@ import { SESSION_COOKIE_NAMES } from "@/lib/auth/sessions";
 import { audit } from "@/lib/audit";
 import { authenticateAgent, completeFragment, failFragment, failInput, heartbeat, heartbeatInput, leaseFragment, parsePowerHeaders } from "@/lib/coordinator/agent";
 import { CoordinatorError, notFound } from "@/lib/coordinator/errors";
-import { cancelQuote, confirmJob, getJob, listJobs, openResults, quoteJob, quoteRequest, textQuoteRequest } from "@/lib/coordinator/jobs";
+import { cancelQuote, confirmInput, confirmJob, getJob, listJobs, openResults, quoteJob, quoteRequest, textQuoteRequest } from "@/lib/coordinator/jobs";
+import { linkUpi, type SybilMode } from "@/lib/coordinator/sybil";
+import { creditHistory, creditWallet } from "@/lib/credits";
 import { getNode, listNodes, registerNode, registerNodeInput, revokeNode, rotateNodeToken, updateNode, updateNodeInput } from "@/lib/coordinator/nodes";
 import { maybeTick, runTick } from "@/lib/coordinator/tick";
 import { heldEarnings, releaseFromQuarantine } from "@/lib/coordinator/verification";
@@ -41,6 +43,10 @@ export interface Deps {
   limit: (policy: PolicyName, key: string) => Promise<LimitResult>;
   /** Issue coordinator challenge pieces (canary + timing). Production: on. */
   challenges?: boolean;
+  /** Checks skip PCs on the same device/network ("enforce", always in production) or only flag them ("report", previews). */
+  sybil?: SybilMode;
+  /** Random number in [0, 1) for the extra checks of new and low-trust PCs. */
+  checkRand?: () => number;
 }
 
 export interface UserDeps extends Deps {
@@ -155,7 +161,17 @@ export function confirmJobHandler(req: Request, d: UserDeps, jobId: string): Pro
     const user = requireUser(d);
     const limited = await limitOr429(d, "jobSubmitUser", user.id);
     if (limited) return limited;
-    return json({ job: await confirmJob(jobCtx(req, d, user), jobId) });
+    const raw = await readBody(req, 1024);
+    let input: unknown = {};
+    if (raw.length > 0) {
+      try {
+        input = JSON.parse(Buffer.from(raw).toString("utf8"));
+      } catch {
+        throw new CoordinatorError(400, "bad_json", "The body isn't valid JSON.");
+      }
+    }
+    const { payWith } = confirmInput.parse(input);
+    return json({ job: await confirmJob(jobCtx(req, d, user), jobId, payWith) });
   });
 }
 
@@ -302,6 +318,36 @@ export function earningsHandler(_req: Request, d: UserDeps): Promise<Response> {
   });
 }
 
+// ─── Time-Bank ─────────────────────────────────────────────────────────────
+
+export function creditsHandler(_req: Request, d: UserDeps): Promise<Response> {
+  return handle(async () => {
+    const user = requireUser(d);
+    const now = d.now();
+    const wallet = await creditWallet(d.db, user.id, now);
+    const history = (await creditHistory(d.db, user.id, 50)).map((r) => ({ ...r, at: r.at.toISOString(), expiresAt: r.expiresAt?.toISOString() ?? null }));
+    return json({ wallet, history, weighting: "1.0x (frozen)", cashable: false, demo: true });
+  });
+}
+
+// ─── Account: payout UPI ID ────────────────────────────────────────────────
+
+const upiInput = z.strictObject({ upiId: z.string().min(3).max(320) });
+
+/** Links the payout UPI ID. One UPI ID, one account (409 if another account has it). */
+export function linkUpiHandler(req: Request, d: UserDeps): Promise<Response> {
+  return handle(async () => {
+    assertSameOrigin(req);
+    const user = requireUser(d);
+    const limited = await limitOr429(d, "accountUser", user.id);
+    if (limited) return limited;
+    const { upiId } = await readJson(req, upiInput, 1024);
+    const result = await linkUpi(d.db, user.id, upiId, d.ipSecret);
+    await audit(d.db, { actorId: user.id, actorType: "user", action: "account.upi_linked", targetType: "user", targetId: user.id, ip: clientIp(req.headers) }, d.ipSecret);
+    return json({ ...result, demo: true });
+  });
+}
+
 // ─── Account: export and delete (DPDP access and erasure) ─────────────────
 
 export function exportAccountHandler(req: Request, d: UserDeps): Promise<Response> {
@@ -375,7 +421,7 @@ export function heartbeatHandler(req: Request, d: Deps): Promise<Response> {
     const a = await agentAuth(req, d);
     if (a.error) return a.error;
     const input = await readJson(req, heartbeatInput, 4 * 1024);
-    return json(await heartbeat(d.db, a.node, input, d.now(), d.ipSecret));
+    return json(await heartbeat(d.db, a.node, input, d.now(), d.ipSecret, clientIp(req.headers)));
   });
 }
 
@@ -386,7 +432,7 @@ export function leaseHandler(req: Request, d: Deps): Promise<Response> {
     const now = d.now();
     // Agent polls drive the scheduler (Hobby cron runs only daily).
     await tickQuietly(d);
-    const { lease, reason } = await leaseFragment(d.db, a.node, now, d.keys, { challenges: d.challenges });
+    const { lease, reason } = await leaseFragment(d.db, a.node, now, d.keys, { challenges: d.challenges, sybil: d.sybil, ip: clientIp(req.headers), ipSecret: d.ipSecret });
     if (!lease) return json({ task: null, reason, pollAfterSec: reason === "no_work" || reason === "busy" ? 10 : 30 });
     return json(lease);
   });
@@ -412,6 +458,7 @@ export function completeHandler(req: Request, d: Deps, fragmentId: string): Prom
       dataKey: d.keys.dataKey,
       ipSecret: d.ipSecret,
       power: parsePowerHeaders(req.headers),
+      checkRand: d.checkRand,
     });
     return json(reply);
   });

@@ -2,6 +2,7 @@ import { and, countDistinct, eq, inArray, isNull, lt, ne, sql, type SQL } from "
 import { audit } from "@/lib/audit";
 import type { Db } from "@/lib/db/client";
 import { fragments, jobs } from "@/lib/db/schema";
+import { refundCredits } from "@/lib/credits";
 import { bookBuyer, ledgerKeys } from "@/lib/ledger";
 import { getPayments } from "@/lib/payments";
 import { RETENTION_SEC } from "./schedule";
@@ -18,7 +19,7 @@ import { RETENTION_SEC } from "./schedule";
  */
 
 /** Anything with the query methods: the db itself or a transaction. */
-export type Q = Pick<Db, "select" | "insert" | "update" | "delete" | "execute">;
+export type Q = Pick<Db, "select" | "selectDistinct" | "insert" | "update" | "delete" | "execute">;
 
 const COUNTED_KINDS = ["primary", "backup"] as const;
 
@@ -90,6 +91,22 @@ export async function refundJob(
   ipSecret: string,
 ): Promise<boolean> {
   if (job.refundedAt || !job.confirmedAt) return false;
+  if (job.creditsSpent !== null) {
+    // Paid with Time-Bank credits: they go back onto the grants they came from.
+    const [marked] = await q
+      .update(jobs)
+      .set({ refundedAt: now })
+      .where(and(eq(jobs.id, job.id), isNull(jobs.refundedAt)))
+      .returning({ id: jobs.id });
+    if (!marked) return false;
+    const seconds = await refundCredits(q, job.id, now);
+    await audit(
+      q as Db,
+      { actorId: null, actorType: "system", action: "job.refunded", targetType: "job", targetId: job.id, meta: { reason, creditSeconds: seconds } },
+      ipSecret,
+    );
+    return true;
+  }
   const key = ledgerKeys.refund(job.id);
   const res = await getPayments().refund({ buyerId: job.buyerId, jobId: job.id, amountPaise: job.pricePaise, reason, idempotencyKey: key });
   if (!res.ok) return false;

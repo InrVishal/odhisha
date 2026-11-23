@@ -66,7 +66,14 @@ export const fragmentKind = pgEnum("fragment_kind", ["primary", "verification", 
 export const checkVerdict = pgEnum("check_verdict", ["match", "mismatch", "corrected", "inconclusive"]);
 export const ownerEntryType = pgEnum("owner_entry_type", ["power_reimbursement", "compute_pay", "payout", "reversal"]);
 export const buyerEntryType = pgEnum("buyer_entry_type", ["charge", "refund"]);
-export const creditEntryType = pgEnum("credit_entry_type", ["earned", "spent", "reversal"]);
+/**
+ * earned: + for one piece (pending until verified). spent: − against one
+ * grant. refund: + back onto a grant (job paid with credits missed its
+ * deadline). clawback: − the whole grant (its work was reversed or couldn't be
+ * verified). expired: − what was left of a grant after 6 months. reversal:
+ * unused, kept for the enum's history. There is no cash-out or transfer type.
+ */
+export const creditEntryType = pgEnum("credit_entry_type", ["earned", "spent", "reversal", "clawback", "expired", "refund"]);
 export const actorType = pgEnum("actor_type", ["user", "admin", "node", "system"]);
 export const waitlistInterest = pgEnum("waitlist_interest", ["owner", "buyer", "both"]);
 
@@ -84,6 +91,13 @@ export const users = pgTable("user", {
   image: text("image"),
   // Set in the database only. No UI or API route changes this column.
   role: userRole("role").notNull().default("user"),
+  /**
+   * Payout UPI ID, as a keyed hash (HMAC) so one UPI ID can belong to one
+   * account only, plus a masked copy to show. Payouts are simulated, so the
+   * full ID isn't kept.
+   */
+  upiHash: varchar("upi_hash", { length: 64 }).unique(),
+  upiMasked: varchar("upi_masked", { length: 80 }),
   createdAt: createdAt(),
   deletedAt: timestamp("deleted_at", { withTimezone: true, mode: "date" }),
 });
@@ -166,6 +180,15 @@ export const nodes = pgTable(
     benchmarkScore: integer("benchmark_score"),
     /** What the agent says its benchmark is. Shown, never used for anything. */
     reportedBenchmark: integer("reported_benchmark"),
+    /** Pieces of buyers' jobs this PC has handed in (counted copies). New PCs are checked more. */
+    piecesDone: integer("pieces_done").notNull().default(0),
+    /** Time-Bank: pieces of buyers' jobs earn credits instead of compute pay (electricity is still paid). */
+    earnsCredits: boolean("earns_credits").notNull().default(false),
+    /** Keyed hash of the agent's device ID, and of the network (/24 or /48) it last called from. */
+    deviceHash: varchar("device_hash", { length: 64 }),
+    subnetHash: varchar("subnet_hash", { length: 64 }),
+    /** When this PC was last sent a canary (a challenge or a known-answer piece). */
+    lastCanaryAt: timestamp("last_canary_at", { withTimezone: true, mode: "date" }),
     /** 0..1000. New nodes start in the middle and move with verification results. */
     trustScore: integer("trust_score").notNull().default(500),
     /** Verification results for work this PC did (as the checked or the checking PC). */
@@ -187,6 +210,8 @@ export const nodes = pgTable(
   (t) => [
     index("node_owner_idx").on(t.ownerId),
     index("node_status_idx").on(t.status),
+    index("node_device_idx").on(t.deviceHash),
+    index("node_subnet_idx").on(t.subnetHash),
     check("node_trust_range", sql`${t.trustScore} between 0 and 1000`),
     check("node_tariff_positive", sql`${t.tariffPaisePerKwh} > 0`),
     check("node_rate_nonnegative", sql`${t.ownerRatePaisePerHr} >= 0`),
@@ -255,6 +280,8 @@ export const jobs = pgTable(
      * time a PC). Holds what the output must satisfy; never sent to agents.
      */
     challenge: jsonb("challenge"),
+    /** Paid with Time-Bank credits (standard GPU-seconds) instead of money. Null: paid in money. */
+    creditsSpent: bigint("credits_spent", { mode: "number" }),
     /** Inputs and outputs are deleted after this time (default: 7 days). */
     purgeAfter: timestamp("purge_after", { withTimezone: true, mode: "date" }),
     purgedAt: timestamp("purged_at", { withTimezone: true, mode: "date" }),
@@ -284,6 +311,11 @@ export const fragments = pgTable(
     verify: boolean("verify").notNull().default(false),
     /** Verification copies only: did its output agree with the copy it checked? */
     verdict: checkVerdict("verdict"),
+    /**
+     * A known-answer canary: a re-run of a piece two PCs of different owners
+     * already agreed on, sent to a third PC as an ordinary check.
+     */
+    canary: boolean("canary").notNull().default(false),
     /** GPU-seconds this fragment was priced at, on the job's node class. */
     estGpuSeconds: integer("est_gpu_seconds").notNull(),
     itemCount: integer("item_count").notNull(),
@@ -400,8 +432,9 @@ export const buyerLedger = pgTable(
 );
 
 /**
- * Time-Bank credits in STANDARD GPU-seconds (1 = one second on an RTX 3060;
- * weighted by benchmark, see lib/timebank.ts). + = earned, − = spent.
+ * Time-Bank credits in standard GPU-seconds (weighting is frozen at 1.0×,
+ * see lib/timebank.ts). Balance = SUM(amount). Per grant: earned + its
+ * spent/refund/clawback/expired rows = what is left of it.
  * Credits are not money: there is no cash-out entry type.
  */
 export const creditLedger = pgTable(
@@ -413,13 +446,23 @@ export const creditLedger = pgTable(
       .references(() => users.id, { onDelete: "restrict" }),
     nodeId: uuid("node_id").references(() => nodes.id, { onDelete: "restrict" }),
     jobId: uuid("job_id").references(() => jobs.id, { onDelete: "restrict" }),
+    /** earned: the piece that earned it. */
+    fragmentId: uuid("fragment_id"),
+    /** spent, refund, clawback, expired: the earned row (grant) they apply to. */
+    grantId: bigint("grant_id", { mode: "number" }),
+    /** earned only: 6 months after it was earned. */
+    expiresAt: timestamp("expires_at", { withTimezone: true, mode: "date" }),
     entryType: creditEntryType("entry_type").notNull(),
     amountGpuSeconds: bigint("amount_gpu_seconds", { mode: "number" }).notNull(),
     idempotencyKey: varchar("idempotency_key", { length: 128 }).notNull().unique(),
     memo: varchar("memo", { length: 256 }),
     createdAt: createdAt(),
   },
-  (t) => [index("credit_ledger_user_idx").on(t.userId, t.createdAt)],
+  (t) => [
+    index("credit_ledger_user_idx").on(t.userId, t.createdAt),
+    index("credit_ledger_grant_idx").on(t.grantId),
+    index("credit_ledger_fragment_idx").on(t.fragmentId),
+  ],
 );
 
 // ─── Audit log (append-only) ───────────────────────────────────────────────

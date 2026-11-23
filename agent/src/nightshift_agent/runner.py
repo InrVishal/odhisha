@@ -25,6 +25,7 @@ from typing import Any
 from nightshift_agent import __version__
 from nightshift_agent.api import ApiError, Client, backoff_delay
 from nightshift_agent.config import AgentConfig, state_dir, write_private
+from nightshift_agent.device import device_id
 from nightshift_agent.nonces import NonceStore
 from nightshift_agent.sandbox import SandboxError, run_fragment
 from nightshift_agent.telemetry import PowerReading, read_power
@@ -70,9 +71,12 @@ class Agent:
     whitelist: dict[str, WorkloadPin] | None = None
     keys: Any = None
     benchmark_score: int | None = None
+    #: Salted hash of the machine ID (see device.py). Injectable for tests.
+    device: Callable[[], str | None] = device_id
     _last_beat: float = field(default=-1e9, init=False)
     _can_work: bool = field(default=False, init=False)
     _errors: int = field(default=0, init=False)
+    _device: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.nonces = NonceStore(self.directory / "nonces.json")
@@ -98,6 +102,10 @@ class Agent:
             payload.update(gpuModel=r.gpu.name, vramMb=r.gpu.vram_mb)
         if self.benchmark_score:
             payload["benchmarkScore"] = self.benchmark_score
+        if self._device is None:
+            self._device = self.device() or ""
+        if self._device:
+            payload["deviceId"] = self._device
         res = self.client.post_json("/api/agent/heartbeat", payload).body
         self._last_beat = self.clock()
         self._can_work = bool(res.get("canWork"))

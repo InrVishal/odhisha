@@ -318,28 +318,31 @@ export const pricing = {
 export const timeBank = {
   meta: nav[4]!,
   heading: "Lend your GPU now, borrow several later",
-  intro: "Time-Bank is for students. Your PC works for the network at night and earns credits. Later, you spend them on a short-lived cluster of several GPUs.",
+  intro: "Time-Bank is for students. Your PC works for the network at night and earns credits. Later, you spend them on a job of your own that runs on several GPUs at once.",
   sections: [
     {
       heading: "Earning credits",
       body: [
-        "Credits are counted in standard GPU-hours. One standard GPU-hour is one hour of work on an RTX 3060.",
-        "Faster GPUs earn more per hour. When your PC joins, the app runs a short benchmark, and your credits are weighted by that score compared with an RTX 3060. For example, a GPU that benchmarks twice as fast earns {tbDouble} for each hour it works.",
-        "Your hostel RTX 3060 running from midnight to 6 AM earns {tbHostel}.",
+        "Switch your PC to earn credits in your dashboard. Its pieces of other people's jobs then earn credits instead of pay for GPU time. Your electricity is still paid back in rupees.",
+        "Credits are counted in standard GPU-hours. For now every GPU earns the same: one standard GPU-hour for each hour of verified work. Faster GPUs will earn more once our speed scores are checked against a real RTX 3060.",
+        "Your hostel PC running from midnight to 6 AM earns {tbHostel}.",
+        "New credits wait until the work is verified. Either its check matched, or it wasn't picked for a check and a day has passed with your PC in good standing.",
       ],
     },
     {
       heading: "Spending credits",
       body: [
-        "When you need a lot of compute at once, book a temporary cluster. Spending uses the same weights: for example, 4 RTX 3060-class GPUs for 3 hours during a hackathon cost {tbCluster}. Faster GPUs in your cluster cost more per hour.",
-        "Your booking runs on the same approved job types as everyone else's.",
+        "Pick \"Pay with Time-Bank credits\" on a quote. Your job's pieces run in parallel on as many GPUs as are free, so a big batch finishes fast. That's your temporary cluster.",
+        "A job costs its GPU-hours plus the 12% verification buffer. For example, a 12 GPU-hour job during a hackathon (4 GPUs for 3 hours) costs {tbCluster}.",
+        "Your job runs on the same approved job types as everyone else's.",
       ],
     },
     {
       heading: "The rules",
       body: [
         "Credits aren't money. You can't cash them out, sell them or give them to someone else.",
-        "One GPU can earn at most 10 standard GPU-hours per hour, however high its benchmark.",
+        "Credits expire 6 months after you earn them. The oldest are spent first.",
+        "If work turns out wrong, or its check can't run before the job's data is deleted, its credits are taken back. The same goes for unverified credits of a PC that's quarantined.",
         "In this prototype, credits are tracked in a demo wallet.",
       ],
     },
@@ -439,7 +442,8 @@ export const privacy = {
       heading: "What we collect",
       body: [
         "Your email address, to log you in. If you log in with Google, we only ask Google for your email. We don't store your name or photo.",
-        "If you're an owner: your PC's GPU model, benchmark score, power draw, online times and earnings.",
+        "If you're an owner: your PC's GPU model, speed score, power draw, online times and earnings, and your payout UPI ID (we keep a scrambled copy to make sure it's on one account only, plus a masked version to show you).",
+        "A scrambled (hashed) ID of each PC's device and the network it connects from, so we can spot one person running many fake accounts. We don't store the raw ID or IP.",
         "If you're a buyer: the job settings and files you upload, and your job history.",
         "A scrambled (hashed) version of your IP address in our security log, so we can spot abuse. We don't store the IP itself.",
       ],
@@ -454,6 +458,7 @@ export const privacy = {
       heading: "Who else sees it",
       body: [
         "PCs on the network see the piece of a job they work on, in plain form, while they work on it.",
+        "To check that PCs are honest, a piece of your job may be run again on one or two other PCs, while your job's data still exists (up to 7 days after it ends).",
         "Our service providers store or process data for us: Vercel (hosting), Neon (database), Upstash (rate limiting), Resend (login emails) and Sentry (error reports, with personal details removed).",
       ],
     },

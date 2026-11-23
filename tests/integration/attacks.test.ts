@@ -7,7 +7,7 @@ import { CLASS_SPECS } from "@/lib/coordinator/classes";
 import { MAX_NODES_PER_OWNER } from "@/lib/coordinator/nodes";
 import { runTick } from "@/lib/coordinator/tick";
 import { heldEarnings } from "@/lib/coordinator/verification";
-import { auditLog, fragments, jobs, nodes, ownerLedger } from "@/lib/db/schema";
+import { auditLog, fragments, jobs, nodes, ownerLedger, users } from "@/lib/db/schema";
 import { ownerEarnings } from "@/lib/ledger";
 import { freshDb } from "../helpers/db";
 import { agentReq, beat, body, complete, embeddingsFor, harness, jsonReq, lease, makeUser, quoteTexts, registerNode, type Harness, type Leased } from "../helpers/coordinator";
@@ -145,11 +145,11 @@ describe("attack table", () => {
     const liar = await pc("Liar");
     await beat(h, liar.token, { benchmarkScore: 10_000 });
     expect(await node(liar.nodeId)).toMatchObject({ reportedBenchmark: 10_000, benchmarkScore: null });
-    // Three challenge runs that really take 8 s each: 200 items / 8 s = 25/s = 500 on the RTX 3060 = 1000 scale.
+    // Three challenge runs that really take 10 s each: 250 items / 10 s = 25/s = 500 on the RTX 3060 = 1000 scale.
     for (let i = 0; i < 3; i++) {
       const l = (await lease(h, liar.token))!;
       expect(await isChallenge(l)).toBe(true);
-      h.clock.advance(8);
+      h.clock.advance(10);
       expect((await complete(h, liar.token, l, honestChallengeOutput(l))).status).toBe(200);
       h.clock.advance(11 * 60);
       await beat(h, liar.token);
@@ -203,7 +203,7 @@ describe("attack table", () => {
     expect(await node(hoarder.nodeId)).toMatchObject({ trustScore: 185, status: "quarantined" });
   });
 
-  it("many fake nodes on one account: capped at 20 PCs; they can't check each other for 30 minutes, and agreeing with each other earns no trust", async () => {
+  it("many fake nodes on one account: capped at 20 PCs, and they never check each other, however long the check waits", async () => {
     const farmer = await makeUser(h.db, "farmer@example.in");
     const a = await pc("Fake A", farmer);
     const b = await pc("Fake B", farmer);
@@ -217,16 +217,19 @@ describe("attack table", () => {
     expect((await h.db.select().from(fragments).where(eq(fragments.id, check.parsed.taskId)))[0]!.kind).toBe("verification");
     await complete(h, outsider.token, check);
 
-    // With nobody else around, a same-owner check runs after 30 minutes but proves nothing.
+    // With nobody else around, the check waits: not after 30 minutes, not after a day.
     await h.db.update(nodes).set({ status: "offline" }).where(eq(nodes.id, outsider.nodeId));
     await job();
     await complete(h, a.token, (await lease(h, a.token))!);
-    const before = (await node(b.nodeId)).trustScore;
-    h.clock.advance(31 * 60);
-    await beat(h, b.token);
-    const late = (await lease(h, b.token))!;
-    await complete(h, b.token, late);
-    expect((await node(b.nodeId)).trustScore).toBe(before);
+    for (const wait of [31 * 60, 24 * 3600]) {
+      h.clock.advance(wait);
+      await beat(h, b.token);
+      expect(await lease(h, b.token)).toBeNull();
+    }
+    // The other owner comes back and takes it.
+    await beat(h, outsider.token);
+    const late = (await lease(h, outsider.token))!;
+    expect((await h.db.select().from(fragments).where(eq(fragments.id, late.parsed.taskId)))[0]!.kind).toBe("verification");
 
     // And no more than 20 PCs per account.
     for (let i = 2; i < MAX_NODES_PER_OWNER; i++) await registerNode(h, farmer, { name: `Fake ${i}` });
@@ -267,7 +270,7 @@ describe("attack table", () => {
     expect(r.paidPaise).toBeGreaterThan(0);
     expect(await node(p.nodeId)).toMatchObject({ trustScore: 500, checksFailed: 0 });
     const spec = (await h.db.select({ c: jobs.challenge }).from(jobs).where(isNotNull(jobs.challenge)).orderBy(desc(jobs.createdAt)))[0]!.c as ChallengeSpec;
-    expect(spec.items).toBe(200);
+    expect(spec.items).toBe(250);
     // Real work comes next, not another challenge.
     await job();
     const next = (await lease(h, p.token))!;
@@ -288,5 +291,96 @@ describe("attack table", () => {
 
     await h.db.update(nodes).set({ status: "quarantined" }).where(and(eq(nodes.id, a.nodeId)));
     expect(await heldEarnings(h.db, a.owner.id)).toBe((await ownerEarnings(h.db, a.owner.id)).balancePaise);
+  });
+
+  // ─── Phase 7 ─────────────────────────────────────────────────────────────
+
+  /** Runs every piece of a 10-piece job on one PC and returns how many got a check. */
+  async function checkedPieces(token: string): Promise<number> {
+    const j = await job(2500);
+    for (let i = 0; i < 10; i++) {
+      const l = (await lease(h, token))!;
+      expect(l.parsed.jobId).toBe(j.id);
+      await complete(h, token, l);
+    }
+    const rows = await h.db.select().from(fragments).where(and(eq(fragments.jobId, j.id), eq(fragments.kind, "primary")));
+    return rows.filter((r) => r.verify).length;
+  }
+
+  it("cheating while new: half of a new PC's first 20 pieces are re-run (not 1 in 10); the rate falls with trust and goes back up if trust drops", async () => {
+    const p = await pc("New PC");
+    // Alternating draws: half of the pieces not picked at confirm time get an extra check.
+    let k = 0;
+    h.deps.checkRand = () => (k++ % 2 === 0 ? 0.1 : 0.9);
+    expect(await checkedPieces(p.token)).toBe(6); // 1 picked + 5 of the other 9
+    // Trusted (100 pieces, trust 900): only the 10% picked at confirm time, even with the luckiest draw.
+    await h.db.update(nodes).set({ piecesDone: 100, trustScore: 900 }).where(eq(nodes.id, p.nodeId));
+    h.deps.checkRand = () => 0;
+    expect(await checkedPieces(p.token)).toBe(1);
+    // Trust falls back to 480: every piece is a candidate for a check again.
+    await h.db.update(nodes).set({ trustScore: 480 }).where(eq(nodes.id, p.nodeId));
+    expect(await checkedPieces(p.token)).toBe(10);
+  });
+
+  it("fake accounts, payout anchor: one UPI ID can belong to one account; a second account trying it is refused and both are flagged", async () => {
+    const a = await makeUser(h.db, "a@example.in");
+    const b = await makeUser(h.db, "b@example.in");
+    const link = (u: User, upiId: string) => H.linkUpiHandler(jsonReq("POST", "/api/account/upi", { upiId }), h.as(u));
+    const ok = await link(a, "Ravi.K@OkAxis");
+    expect(ok.status).toBe(200);
+    expect(await body(ok)).toMatchObject({ upiMasked: "ra•••@okaxis", demo: true });
+    const taken = await link(b, "ravi.k@okaxis");
+    expect(taken.status).toBe(409);
+    expect((await body(taken)).error).toBe("upi_in_use");
+    const flags = await h.db.select().from(auditLog).where(eq(auditLog.action, "sybil.flagged"));
+    expect(flags).toHaveLength(1);
+    expect(flags[0]!.meta).toMatchObject({ kind: "upi", accounts: `${b.id},${a.id}` });
+    // The stored value is a keyed hash: the UPI ID itself isn't in the database.
+    const row = (await h.db.select().from(users).where(eq(users.id, a.id)))[0]!;
+    expect(row.upiHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(row)).not.toContain("ravi.k@okaxis");
+    expect((await link(b, "not a upi")).status).toBe(400);
+  });
+
+  it("fake PCs on one machine: the same device on two accounts is flagged, and one can't check the other", async () => {
+    const a = await pc("A");
+    const b = await pc("B");
+    const device = "d".repeat(64);
+    await beat(h, a.token, { deviceId: device });
+    await beat(h, b.token, { deviceId: device });
+    const flags = await h.db.select().from(auditLog).where(eq(auditLog.action, "sybil.flagged"));
+    expect(flags.map((f) => (f.meta as { kind: string }).kind)).toEqual(["device"]);
+    await job();
+    await complete(h, a.token, (await lease(h, a.token))!);
+    expect(await lease(h, b.token)).toBeNull();
+    // Preview deployments only report it (all CI agents share one machine).
+    h.deps.sybil = "report";
+    expect(await lease(h, b.token)).not.toBeNull();
+  });
+
+  it("fake accounts on one network: PCs of different accounts on one /24 are flagged and never check each other; a PC elsewhere does", async () => {
+    const leaseFrom = async (token: string, ip: string) => {
+      const res = await H.leaseHandler(agentReq(token, "/api/agent/lease", undefined, { "x-real-ip": ip }), h.deps);
+      const b = await body<Leased & { task: Leased["task"] | null }>(res);
+      return b.task ? { ...b, parsed: JSON.parse(b.task.task) as Leased["parsed"] } : null;
+    };
+    const a = await pc("A");
+    const b = await pc("B");
+    const c = await pc("C");
+    await H.heartbeatHandler(agentReq(a.token, "/api/agent/heartbeat", {}, { "x-real-ip": "203.0.113.5" }), h.deps);
+    await H.heartbeatHandler(agentReq(b.token, "/api/agent/heartbeat", {}, { "x-real-ip": "203.0.113.77" }), h.deps);
+    await H.heartbeatHandler(agentReq(c.token, "/api/agent/heartbeat", {}, { "x-real-ip": "198.51.100.9" }), h.deps);
+    const flags = await h.db.select().from(auditLog).where(eq(auditLog.action, "sybil.flagged"));
+    expect(flags.map((f) => (f.meta as { kind: string }).kind)).toEqual(["subnet"]);
+    await job();
+    const l = (await leaseFrom(a.token, "203.0.113.5"))!;
+    await complete(h, a.token, l);
+    expect(await leaseFrom(b.token, "203.0.113.77")).toBeNull();
+    const check = (await leaseFrom(c.token, "198.51.100.9"))!;
+    expect((await h.db.select().from(fragments).where(eq(fragments.id, check.parsed.taskId)))[0]!.kind).toBe("verification");
+    // No IP is stored, only a keyed hash of the network.
+    const stored = (await node(a.nodeId)).subnetHash!;
+    expect(stored).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(await h.db.select().from(nodes))).not.toContain("203.0.113");
   });
 });

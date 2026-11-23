@@ -43,12 +43,15 @@ export const promises: Promise_[] = [
   { text: "Every job costs at least ₹10; the top-up is shown, and owners are paid the same", phase: 6, done: true, proof: "tests/unit/pricing.test.ts (minimum), tests/live/agent-preview.ts (quote)" },
   { text: "Speed scores come from NightShift's own timed checks, not from what a PC says about itself", phase: 6, done: true, proof: "tests/unit/challenge.test.ts, tests/integration/attacks.test.ts (inflated benchmark), tests/live/agent-preview.ts" },
   { text: "About 1 piece in 10 re-run on a second PC; trust scores; bad PCs paused", phase: 6, done: true, proof: "tests/unit/verify.test.ts, tests/integration/verification.test.ts, tests/live/agent-preview.ts (second real agent checks the first)" },
-  // Credits are earned from phase 7 on; phase 6 already takes back pay for work that fails its check.
-  { text: "Only work that passes checks earns Time-Bank credits", phase: 7, done: false },
 
   // Phase 7
-  { text: "Time-Bank wallet (demo): earn and spend credits; no cash-out, sale or transfer", phase: 7, done: false },
-  { text: "GPU-on-EMI simulator (demo only, no lending)", phase: 7, done: false },
+  { text: "Only verified work earns spendable Time-Bank credits; wrong, unverifiable or quarantined work is clawed back", phase: 7, done: true, proof: "tests/integration/timebank.test.ts, tests/live/agent-preview.ts (credits released when the check matched)" },
+  { text: "Time-Bank wallet (demo): earn and spend credits on jobs; 6-month expiry; no cash-out, sale or transfer", phase: 7, done: true, proof: "tests/integration/timebank.test.ts, tests/e2e/dashboard.spec.ts" },
+  { text: "Credit weighting frozen at 1.0× until the speed scale is calibrated on a real RTX 3060", phase: 7, done: true, proof: "tests/unit/timebank.test.ts, docs/CALIBRATION.md" },
+  { text: "GPU-on-EMI simulator (demo only, no lending), electricity taken out first", phase: 7, done: true, proof: "tests/unit/emi.test.ts, tests/e2e/dashboard.spec.ts" },
+  { text: "Canaries that look like real work: re-runs of verified real pieces", phase: 7, done: true, proof: "tests/integration/canary.test.ts (classifier at chance)" },
+  { text: "New and low-trust PCs checked on half their pieces", phase: 7, done: true, proof: "tests/unit/check-rate.test.ts, tests/integration/attacks.test.ts" },
+  { text: "One payout UPI ID per account; shared devices and networks flagged and kept from checking each other", phase: 7, done: true, proof: "tests/integration/attacks.test.ts, tests/live/agent-preview.ts (flags raised)" },
 
   // Phase 8
   { text: "Sentry error reports with personal details removed", phase: 8, done: false },

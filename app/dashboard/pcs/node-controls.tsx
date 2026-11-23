@@ -83,6 +83,24 @@ export function NodeControls({ node }: { node: PublicNode }) {
         <button type="button" disabled={pending !== null} onClick={() => setEditing((v) => !v)} className={secondaryButtonClass} aria-expanded={editing}>
           Hours and rates
         </button>
+        {!removed ? (
+          <button
+            type="button"
+            disabled={pending !== null}
+            onClick={() =>
+              void run(
+                "credits",
+                "PATCH",
+                `/api/nodes/${node.id}`,
+                { earnsCredits: !node.earnsCredits },
+                node.earnsCredits ? "Now earning rupees." : "Now earning Time-Bank credits for buyers' pieces. Electricity is still paid in rupees.",
+              )
+            }
+            className={secondaryButtonClass}
+          >
+            {node.earnsCredits ? "Earn rupees instead" : "Earn Time-Bank credits instead"}
+          </button>
+        ) : null}
         <button
           type="button"
           disabled={pending !== null}

@@ -105,16 +105,16 @@ describe("site copy", () => {
     expect(copyValues.sampleQuote).toMatch(/^14 GPU-hours on RTX 4070 PCs .* ₹25 an hour comes to ₹552/);
     expect(copyValues.perHour4070).toBe("₹39.42");
     expect(copyValues.tbHostel).toBe("6 standard GPU-hours");
-    expect(copyValues.tbDouble).toBe("2 standard GPU-hours");
-    expect(copyValues.tbCluster).toBe("12 standard GPU-hours");
+    expect(copyValues.tbDouble).toBeUndefined();
+    // 12 GPU-hours + the 12% verification buffer.
+    expect(copyValues.tbCluster).toBe("13.44 standard GPU-hours");
     expect(copyValues.sampleQuote).toContain("6:00 AM");
   });
 
   it("marks examples as examples", () => {
     expect(content.home.pillars[0]!.body).toMatch(/Sample quote/);
     expect(content.builders.sections.find((s) => s.heading === "The quote")!.body[0]).toMatch(/Sample quote/);
-    expect(content.timeBank.sections[0]!.body.join(" ")).toMatch(/For example/);
-    expect(content.timeBank.sections[1]!.body.join(" ")).toMatch(/for example/);
+    expect(content.timeBank.sections[1]!.body.join(" ")).toMatch(/For example/);
   });
 
   it("says demo mode where money is involved", () => {
@@ -124,11 +124,14 @@ describe("site copy", () => {
     expect(content.pricing.calculatorNote).toMatch(/simulated/);
   });
 
-  it("says Time-Bank credits are standard GPU-hours, benchmark-weighted, and not cashable", () => {
+  it("says Time-Bank credits are standard GPU-hours, the same for every GPU for now, verified first, expiring, and not cashable", () => {
     const tb = content.timeBank.sections.flatMap((s) => s.body).join(" ");
     expect(tb).toMatch(/standard GPU-hours/);
-    expect(tb).toMatch(/One standard GPU-hour is one hour of work on an RTX 3060/);
-    expect(tb).toMatch(/benchmark/);
+    expect(tb).toMatch(/every GPU earns the same: one standard GPU-hour for each hour of verified work/);
+    expect(tb).not.toMatch(/benchmark/);
+    expect(tb).toMatch(/wait until the work is verified/);
+    expect(tb).toMatch(/expire 6 months/);
+    expect(tb).toMatch(/taken back/);
     expect(tb).toMatch(/can.t cash them out/);
     expect(tb).not.toMatch(/credit-hour/);
   });

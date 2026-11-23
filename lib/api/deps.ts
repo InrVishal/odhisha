@@ -1,4 +1,5 @@
 import "server-only";
+import { randomInt } from "node:crypto";
 import { ipHashSecret } from "@/lib/auth";
 import { currentUser } from "@/lib/auth/guards";
 import { getDb } from "@/lib/db";
@@ -18,6 +19,8 @@ export async function deps(): Promise<Deps> {
     cronSecret: env.CRON_SECRET,
     limit: checkLimit,
     challenges: true,
+    sybil: env.SYBIL_CHECKER_RULES,
+    checkRand: () => randomInt(1_000_000_000) / 1_000_000_000,
   };
 }
 

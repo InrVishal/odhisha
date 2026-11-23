@@ -3,6 +3,7 @@ import { audit } from "@/lib/audit";
 import { z } from "zod";
 import type { Db } from "@/lib/db/client";
 import { fragments, jobs, nodes, nodeTokens } from "@/lib/db/schema";
+import { earnCredits } from "@/lib/credits";
 import { bookOwner, ledgerKeys } from "@/lib/ledger";
 import { safeEqual } from "@/lib/security/tokens";
 import { hashToken, isWellFormedNodeToken } from "@/lib/security/tokens";
@@ -14,6 +15,9 @@ import { cancelSiblings, completeJobIfDone, failJobIfPieceDead, type Q } from ".
 import { queueCheckIfPicked, resolveCheck, applyCheck } from "./verification";
 import { wantsChallenge } from "./challenge";
 import { createChallenge, lastChallengeAt, settleChallenge, type StoredChallenge } from "./challenge-db";
+import { createKnownAnswerCanary } from "./canary";
+import { deviceHash, mayCheck, pieceOrigins, recordOrigin, subnetHash, type SybilMode } from "./sybil";
+import { checkRate } from "./verify";
 import { clampWatts } from "./classes";
 import { toNodeView, type NodeRow } from "./nodes";
 import {
@@ -67,6 +71,8 @@ export const heartbeatInput = z.strictObject({
   /** What the agent measured itself. Stored for display only: scheduling uses the coordinator's own challenge timings. */
   benchmarkScore: z.int().min(1).max(MAX_BENCHMARK_SCORE).optional(),
   agentVersion: z.string().max(32).optional(),
+  /** sha256 of the machine's ID, made by the agent. Stored as a keyed hash; used to spot one PC registered as many. */
+  deviceId: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
 
 export interface HeartbeatReply {
@@ -89,7 +95,10 @@ async function powerPatch(db: Db, node: NodeRow, watts: number, source: "nvidia-
   return { measuredWatts: nextMeasuredWatts(node.measuredWatts, capped), wattsEstimated: source === "estimated" };
 }
 
-export async function heartbeat(db: Db, node: NodeRow, input: z.infer<typeof heartbeatInput>, now: Date, ipSecret?: string): Promise<HeartbeatReply> {
+export async function heartbeat(db: Db, node: NodeRow, input: z.infer<typeof heartbeatInput>, now: Date, ipSecret?: string, ip?: string): Promise<HeartbeatReply> {
+  if (ipSecret) {
+    await recordOrigin(db, node, { device: input.deviceId ? deviceHash(ipSecret, input.deviceId) : null, subnet: ip ? subnetHash(ipSecret, ip) : null }, ipSecret);
+  }
   let patch: Partial<typeof nodes.$inferInsert> = { lastSeenAt: now };
   if (node.status === "pending" || node.status === "offline") patch.status = "online";
   if (input.watts) patch = { ...patch, ...(await powerPatch(db, node, input.watts, input.wattsSource, ipSecret)) };
@@ -126,13 +135,15 @@ export interface LeaseReply {
  * Taking the fragment is one conditional UPDATE (`WHERE status = 'pending'`):
  * if two nodes race for it, exactly one wins and the other tries the next.
  */
-/** Before this, a check isn't given to a PC of the same owner as the PC it checks. */
-export const SAME_OWNER_CHECK_AFTER_SEC = 30 * 60;
-
 export interface LeaseOptions {
-  /** Issue coordinator challenges (canary + timing). On in production; tests switch it on when they test it. */
+  /** Issue canaries (known-answer pieces, or made-up challenges) that also time the PC. On in production; tests switch it on when they test it. */
   challenges?: boolean;
   rand?: (max: number) => number;
+  /** Whether checks also skip PCs on the same device or network (always on in production). */
+  sybil?: SybilMode;
+  /** Where the request came from, for the network rule. */
+  ip?: string;
+  ipSecret?: string;
 }
 
 export async function leaseFragment(
@@ -142,11 +153,13 @@ export async function leaseFragment(
   keys: Pick<CoordinatorKeys, "signingKey" | "publicKey" | "dataKey">,
   opts: LeaseOptions = {},
 ): Promise<{ lease: LeaseReply | null; reason: Unavailable | "no_work" | "busy" | null }> {
+  if (opts.ip && opts.ipSecret) await recordOrigin(db, node, { subnet: subnetHash(opts.ipSecret, opts.ip) }, opts.ipSecret);
   const [fresh] = await db
     .update(nodes)
     .set({ lastSeenAt: now, ...(node.status === "pending" || node.status === "offline" ? { status: "online" as const } : {}) })
     .where(eq(nodes.id, node.id))
     .returning();
+  const mode: SybilMode = opts.sybil ?? "enforce";
   const view = toNodeView(fresh!);
   const reason = unavailableReason(view, now);
   if (reason) return { lease: null, reason };
@@ -161,7 +174,8 @@ export async function leaseFragment(
   if (holding.length) return { lease: null, reason: "busy" };
 
   if (opts.challenges && wantsChallenge({ measured: fresh!.benchmarkScore !== null, lastChallengeAt: await lastChallengeAt(db, node.id), now, rand: opts.rand })) {
-    const { fragment, job } = await createChallenge(db, fresh!, now, keys.dataKey, opts.rand);
+    // A re-run of a verified real piece if there is one; a made-up challenge otherwise.
+    const { fragment, job } = (await createKnownAnswerCanary(db, fresh!, now, mode)) ?? (await createChallenge(db, fresh!, now, keys.dataKey, opts.rand));
     return { lease: await signLease(db, node, fragment, job, keys, now), reason: null };
   }
 
@@ -205,18 +219,12 @@ export async function leaseFragment(
     .limit(10);
 
   const closes = windowEndsAt(now, view.window);
+  const me = { ownerId: fresh!.ownerId, deviceHash: fresh!.deviceHash, subnetHash: fresh!.subnetHash };
   for (const { f, j } of candidates) {
-    // Prefer a different owner for checks (two PCs of one person could agree
-    // on a wrong answer). Small setups with one owner still get checked, later.
-    if (f.kind === "verification" && f.parentFragmentId) {
-      const [checked] = await db
-        .select({ ownerId: nodes.ownerId, doneAt: fragments.completedAt })
-        .from(fragments)
-        .innerJoin(nodes, eq(nodes.id, fragments.completedByNodeId))
-        .where(eq(fragments.id, f.parentFragmentId))
-        .limit(1);
-      if (checked?.ownerId === fresh!.ownerId && checked.doneAt && now.getTime() - checked.doneAt.getTime() < SAME_OWNER_CHECK_AFTER_SEC * 1000) continue;
-    }
+    // A check never goes to a PC on the same account, device or network as
+    // any PC that ran or checked the piece: two PCs of one person could
+    // agree on a wrong answer.
+    if (f.kind === "verification" && !mayCheck(me, await pieceOrigins(db, f.jobId, f.seq), mode)) continue;
     const spec = WORKLOADS[j.workloadType];
     const expected = estimateSeconds(spec, f.itemCount, nodeBenchmark(view));
     if (closes && now.getTime() + expected * 1000 > closes.getTime()) continue;
@@ -308,6 +316,8 @@ export interface CompleteReply {
   /** False if another copy finished the piece first. The owner is still paid. */
   accepted: boolean;
   paidPaise: number;
+  /** Time-Bank PCs: credits earned for the piece (pending until verified). */
+  creditSeconds?: number;
 }
 
 /**
@@ -318,7 +328,18 @@ export interface CompleteReply {
 export async function completeFragment(
   db: Db,
   node: NodeRow,
-  args: { fragmentId: string; attempt: number; sha256: string; body: Uint8Array; now: Date; dataKey: Buffer; ipSecret: string; power?: PowerReport | null },
+  args: {
+    fragmentId: string;
+    attempt: number;
+    sha256: string;
+    body: Uint8Array;
+    now: Date;
+    dataKey: Buffer;
+    ipSecret: string;
+    power?: PowerReport | null;
+    /** For the extra checks of new and low-trust PCs. Tests pass a fixed one. */
+    checkRand?: () => number;
+  },
 ): Promise<CompleteReply> {
   if (!/^[0-9a-f]{64}$/.test(args.sha256) || sha256Hex(args.body) !== args.sha256) {
     throw new CoordinatorError(400, "digest_mismatch", "Output doesn't match its sha256.");
@@ -402,7 +423,14 @@ export async function completeFragment(
         });
       } else {
         await cancelSiblings(tx, f);
-        await queueCheckIfPicked(tx, { ...f, status: "done", outputKey, outputDigest: args.sha256, completedAt: args.now, completedByNodeId: node.id });
+        // The rate depends on how many pieces this PC had done before this one.
+        const [counted] = await tx
+          .update(nodes)
+          .set({ piecesDone: sql`${nodes.piecesDone} + 1` })
+          .where(eq(nodes.id, node.id))
+          .returning({ piecesDone: nodes.piecesDone, trustScore: nodes.trustScore });
+        const rate = checkRate({ piecesDone: (counted?.piecesDone ?? 1) - 1, trustScore: counted?.trustScore ?? payNode.trustScore });
+        await queueCheckIfPicked(tx, { ...f, status: "done", outputKey, outputDigest: args.sha256, completedAt: args.now, completedByNodeId: node.id }, { rate, rand: args.checkRand });
       }
     } else {
       // A cancelled copy: another node finished the piece while this one was
@@ -414,6 +442,12 @@ export async function completeFragment(
     }
 
     const memo = `${f.kind === "verification" ? "check of " : ""}${j.workloadType} piece ${f.seq + 1}/${j.fragmentCount}`;
+    // Time-Bank: a buyer's piece earns credits instead of compute pay
+    // (pending until verified). Checks and lost races are paid in rupees.
+    const credits = accepted && f.kind !== "verification" && payNode.earnsCredits;
+    if (credits) {
+      await earnCredits(tx, { userId: node.ownerId, nodeId: node.id, jobId: j.id, fragmentId: f.id, gpuSeconds: f.estGpuSeconds, now: args.now, memo: `Earned for ${memo}` });
+    }
     await bookOwner(tx, {
       ownerId: node.ownerId,
       nodeId: node.id,
@@ -424,18 +458,20 @@ export async function completeFragment(
       idempotencyKey: ledgerKeys.power(f.id),
       memo: `Electricity for ${memo}`,
     });
-    await bookOwner(tx, {
-      ownerId: node.ownerId,
-      nodeId: node.id,
-      jobId: j.id,
-      fragmentId: f.id,
-      entryType: "compute_pay",
-      amountPaise: pay.ownerPayPaise,
-      idempotencyKey: ledgerKeys.computePay(f.id),
-      memo: `Compute for ${memo}`,
-    });
+    if (!credits) {
+      await bookOwner(tx, {
+        ownerId: node.ownerId,
+        nodeId: node.id,
+        jobId: j.id,
+        fragmentId: f.id,
+        entryType: "compute_pay",
+        amountPaise: pay.ownerPayPaise,
+        idempotencyKey: ledgerKeys.computePay(f.id),
+        memo: `Compute for ${memo}`,
+      });
+    }
     if (accepted && f.kind !== "verification") await completeJobIfDone(tx, j.id, args.now, args.ipSecret);
-    return { accepted, paidPaise: pay.electricityPaise + pay.ownerPayPaise };
+    return { accepted, paidPaise: pay.electricityPaise + (credits ? 0 : pay.ownerPayPaise), ...(credits ? { creditSeconds: f.estGpuSeconds } : {}) };
   });
 }
 

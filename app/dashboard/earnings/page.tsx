@@ -4,9 +4,12 @@ import { rupees, shortId, when } from "@/components/dashboard/format";
 import { Card, Empty, PageTitle, Stat, TableWrap, Td, Th } from "@/components/dashboard/ui";
 import { listNodes } from "@/lib/coordinator/nodes";
 import { heldEarnings } from "@/lib/coordinator/verification";
-import { creditBalance, earningsByNode, ownerPieces } from "@/lib/dashboard";
+import { creditWallet } from "@/lib/credits";
+import { earningsByNode, ownerPieces } from "@/lib/dashboard";
+import { getDbUser } from "@/lib/dashboard";
+import { UpiForm } from "./upi-form";
 import { ownerEarnings } from "@/lib/ledger";
-import { formatStandardHours } from "@/lib/timebank";
+import { formatCredits } from "@/lib/timebank";
 import { pageContext } from "../data";
 
 export const metadata: Metadata = { title: "Earnings" };
@@ -18,9 +21,10 @@ export default async function EarningsPage() {
     earningsByNode(db, user.id),
     ownerPieces(db, user.id, 200),
     listNodes({ db, ownerId: user.id, now }),
-    creditBalance(db, user.id),
+    creditWallet(db, user.id, now),
     heldEarnings(db, user.id),
   ]);
+  const me = await getDbUser(db, user.id);
   const names = new Map(nodes.map((n) => [n.id, n.name]));
 
   return (
@@ -73,12 +77,22 @@ export default async function EarningsPage() {
           )}
         </Card>
 
+        <Card title="Payouts">
+          <p className="text-sm text-mist">
+            Payouts go to one UPI ID, and one UPI ID can belong to one account only. Demo mode: payouts are simulated, so
+            nothing is sent to it.
+          </p>
+          <p className="mt-3 text-sm text-lavender">
+            Payout UPI ID: <strong>{me?.upiMasked ?? "not linked yet"}</strong>
+          </p>
+          <UpiForm linked={Boolean(me?.upiMasked)} />
+        </Card>
+
         <Card title="Time-Bank credits">
-          <p className="text-2xl font-semibold text-lavender">{formatStandardHours(Math.max(credits, 0))}</p>
+          <p className="text-2xl font-semibold text-lavender">{formatCredits(Math.max(credits.availableSec, 0))} available</p>
           <p className="mt-2 text-sm text-mist">
-            Credits are counted in standard GPU-hours (one hour on an RTX 3060) and can&apos;t be cashed out. Earning credits
-            instead of rupees isn&apos;t switched on yet, so your work so far is paid in rupees above.{" "}
-            <Link href="/time-bank">How the Time-Bank works</Link>
+            {formatCredits(Math.max(credits.pendingSec, 0))} waiting to be verified. Credits can&apos;t be cashed out.{" "}
+            <Link href="/dashboard/credits">Your Time-Bank wallet</Link>
           </p>
         </Card>
 

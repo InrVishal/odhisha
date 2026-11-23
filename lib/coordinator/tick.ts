@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull, lt } from "drizzle-orm";
 import type { Db } from "@/lib/db/client";
 import { fragments, jobs, locks, nodes } from "@/lib/db/schema";
+import { clawBackUnverifiedJob, expireCredits } from "@/lib/credits";
 import { markMissedDeadlines, requeueLeased } from "./lifecycle";
 import { HEARTBEAT_TIMEOUT_SEC, needsBackup } from "./schedule";
 import { deleteJobBlobs } from "./store";
@@ -29,9 +30,11 @@ export interface TickReport {
   deadlinesMissed: number;
   quotesExpired: number;
   jobsPurged: number;
+  /** Time-Bank credit-seconds that reached 6 months and expired. */
+  creditsExpired: number;
 }
 
-const EMPTY: TickReport = { ran: false, leasesExpired: 0, nodesOffline: 0, backupsStarted: 0, deadlinesMissed: 0, quotesExpired: 0, jobsPurged: 0 };
+const EMPTY: TickReport = { ran: false, leasesExpired: 0, nodesOffline: 0, backupsStarted: 0, deadlinesMissed: 0, quotesExpired: 0, jobsPurged: 0, creditsExpired: 0 };
 
 /**
  * Takes the named lock if it's free or expired. One statement, so two
@@ -108,8 +111,13 @@ export async function runTick(db: Db, now: Date, ipSecret: string): Promise<Tick
       .set({ status: "cancelled", leaseExpiresAt: null })
       .where(and(eq(fragments.jobId, j.id), inArray(fragments.status, ["pending", "leased"])));
     await deleteJobBlobs(db, j.id);
+    // A check that never ran can't run now: credits for those pieces were never verified.
+    await clawBackUnverifiedJob(db, j.id, now, ipSecret);
   }
   report.jobsPurged = due.length;
+
+  // 7. Time-Bank credits older than 6 months.
+  report.creditsExpired = await expireCredits(db, now);
 
   return report;
 }

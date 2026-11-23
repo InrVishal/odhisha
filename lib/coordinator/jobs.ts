@@ -4,6 +4,7 @@ import { z } from "zod";
 import { audit } from "@/lib/audit";
 import type { Db } from "@/lib/db/client";
 import { fragments, jobs, nodes } from "@/lib/db/schema";
+import { creditCost, spendCredits } from "@/lib/credits";
 import { bookBuyer, jobNetCharge, ledgerKeys } from "@/lib/ledger";
 import { getPayments } from "@/lib/payments";
 import { priceJob, type PriceBreakdown } from "@/lib/pricing";
@@ -84,6 +85,10 @@ export interface PublicJob {
   refunded: boolean;
   /** What the buyer has actually paid for this job (charge − refunds). */
   netChargedPaise: number;
+  /** Paid with Time-Bank credits: how many standard GPU-seconds. Null when paid in money. */
+  creditsSpent: number | null;
+  /** While quoted: what it would cost in credits instead. */
+  creditCost: number | null;
   progress: { fragmentsDone: number; fragmentsTotal: number; nodesWorking: number };
   /** Pieces re-run on a second PC to check them, and how that went. */
   checks: JobChecks;
@@ -211,11 +216,28 @@ async function ownJob(db: Db, buyerId: string, jobId: string): Promise<typeof jo
   return job;
 }
 
-/** Confirms a quote: charges the buyer (simulated) and queues the fragments. */
-export async function confirmJob(ctx: Ctx, jobId: string): Promise<PublicJob> {
+export const confirmInput = z.strictObject({ payWith: z.enum(["money", "credits"]).default("money") }).default({ payWith: "money" });
+
+/** Credits (standard GPU-seconds) a quoted job would cost if paid with Time-Bank credits. */
+export async function jobCreditCost(db: Db, jobId: string): Promise<number> {
+  const rows = await db
+    .select({ est: fragments.estGpuSeconds })
+    .from(fragments)
+    .where(and(eq(fragments.jobId, jobId), eq(fragments.kind, "primary")));
+  return creditCost(rows.map((r) => r.est));
+}
+
+/**
+ * Confirms a quote and queues the fragments. Paid in money (simulated
+ * charge), or with Time-Bank credits: verified credits, oldest-expiring
+ * first. Owners who run a credit-paid job are paid as usual; credits never
+ * turn into money.
+ */
+export async function confirmJob(ctx: Ctx, jobId: string, payWith: "money" | "credits" = "money"): Promise<PublicJob> {
   const job = await ownJob(ctx.db, ctx.buyerId, jobId);
   if (job.status !== "quoted") throw new CoordinatorError(409, "not_quoted", "This job was already confirmed or cancelled.");
   if (job.quoteExpiresAt <= ctx.now) throw new CoordinatorError(409, "quote_expired", "This quote has expired. Ask for a new one.");
+  if (payWith === "credits") return confirmWithCredits(ctx, job);
 
   const key = ledgerKeys.charge(job.id);
   const charge = await getPayments().charge({ buyerId: ctx.buyerId, jobId, amountPaise: job.pricePaise, idempotencyKey: key });
@@ -245,6 +267,27 @@ export async function confirmJob(ctx: Ctx, jobId: string): Promise<PublicJob> {
     ctx.ipSecret,
   );
   return getJob(ctx, jobId);
+}
+
+async function confirmWithCredits(ctx: Ctx, job: typeof jobs.$inferSelect): Promise<PublicJob> {
+  const cost = await jobCreditCost(ctx.db, job.id);
+  await ctx.db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(jobs)
+      .set({ status: "queued", confirmedAt: ctx.now, purgeAfter: purgeTime(job.deadlineAt), creditsSpent: cost })
+      .where(and(eq(jobs.id, job.id), eq(jobs.buyerId, ctx.buyerId), eq(jobs.status, "quoted"), gt(jobs.quoteExpiresAt, ctx.now)))
+      .returning({ id: jobs.id });
+    if (!updated) throw new CoordinatorError(409, "not_quoted", "This job was already confirmed or cancelled.");
+    // Throws (and rolls the confirm back) if there aren't enough verified credits.
+    await spendCredits(tx, ctx.buyerId, cost, job.id, ctx.now);
+    await planVerification(tx, job.id, job.fragmentCount);
+  });
+  await audit(
+    ctx.db,
+    { actorId: ctx.buyerId, actorType: "user", action: "job.confirmed", targetType: "job", targetId: job.id, ip: ctx.ip, meta: { creditSeconds: cost } },
+    ctx.ipSecret,
+  );
+  return getJob(ctx, job.id);
 }
 
 /** Cancels an unconfirmed quote and deletes its data now. */
@@ -287,6 +330,8 @@ async function toPublicJob(db: Db, job: typeof jobs.$inferSelect): Promise<Publi
     completedAt: job.completedAt?.toISOString() ?? null,
     refunded: Boolean(job.refundedAt),
     netChargedPaise: await jobNetCharge(db, job.buyerId, job.id),
+    creditsSpent: job.creditsSpent,
+    creditCost: job.status === "quoted" ? await jobCreditCost(db, job.id) : null,
     progress: { fragmentsDone: done, fragmentsTotal: job.fragmentCount, nodesWorking: working },
     checks: await jobChecks(db, job.id),
     resultsAvailable: finished && !job.purgedAt,

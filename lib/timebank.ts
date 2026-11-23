@@ -1,10 +1,13 @@
+import { DEFAULT_VERIFICATION_BUFFER_BPS } from "@/lib/pricing";
+
 /**
  * Time-Bank credit maths. Pure, no I/O.
  *
- * Credits are counted in STANDARD GPU-seconds: one second of work on the
- * baseline GPU, an RTX 3060. A node's work is weighted by its benchmark score
- * relative to that baseline, so faster GPUs earn more per hour, and cost more
- * per hour when you spend credits on them.
+ * Credits are counted in standard GPU-seconds. The plan is to weight a PC's
+ * work by its speed score relative to an RTX 3060 (faster GPUs earn more per
+ * hour). That weighting is FROZEN AT 1.0× (CREDIT_WEIGHTING_FROZEN) until the
+ * speed scale is calibrated on a real RTX 3060 (docs/CALIBRATION.md): until
+ * then every verified GPU-second earns one credit-second, whatever the PC.
  *
  * Benchmark scale: the agent's benchmark (phase 4) is normalised so that a
  * reference RTX 3060 scores BASELINE_BENCHMARK_SCORE (1000). A GPU twice as
@@ -42,6 +45,15 @@ function checkInt(name: string, v: number, min: number, max: number): void {
   }
 }
 
+/** True until speed scores are calibrated: every PC earns and costs 1.0×. */
+export const CREDIT_WEIGHTING_FROZEN = true;
+
+/** The weight a PC's work gets, as a benchmark score (1000 = 1.0×). */
+export function creditWeightScore(benchmarkScore: number): number {
+  const b = effectiveBenchmark(benchmarkScore);
+  return CREDIT_WEIGHTING_FROZEN ? BASELINE_BENCHMARK_SCORE : b;
+}
+
 /** Benchmark used for weighting: at least 1, at most MAX_BENCHMARK_SCORE. */
 export function effectiveBenchmark(benchmarkScore: number): number {
   checkInt("benchmarkScore", benchmarkScore, 0, Number.MAX_SAFE_INTEGER);
@@ -51,13 +63,13 @@ export function effectiveBenchmark(benchmarkScore: number): number {
 /** Standard GPU-seconds earned for work done on a node. Rounded down. */
 export function earnedStandardSeconds(gpuSeconds: number, benchmarkScore: number): number {
   checkInt("gpuSeconds", gpuSeconds, 0, MAX_GPU_SECONDS);
-  return Math.floor((gpuSeconds * effectiveBenchmark(benchmarkScore)) / BASELINE_BENCHMARK_SCORE);
+  return Math.floor((gpuSeconds * creditWeightScore(benchmarkScore)) / BASELINE_BENCHMARK_SCORE);
 }
 
 /** Standard GPU-seconds it costs to use a node for this long. Rounded up. */
 export function costStandardSeconds(gpuSeconds: number, benchmarkScore: number): number {
   checkInt("gpuSeconds", gpuSeconds, 0, MAX_GPU_SECONDS);
-  return Math.ceil((gpuSeconds * effectiveBenchmark(benchmarkScore)) / BASELINE_BENCHMARK_SCORE);
+  return Math.ceil((gpuSeconds * creditWeightScore(benchmarkScore)) / BASELINE_BENCHMARK_SCORE);
 }
 
 /** Cost of a temporary cluster: every node for the same duration. */
@@ -75,4 +87,25 @@ export function formatStandardHours(standardSeconds: number): string {
   const frac = hundredths % 100;
   const num = frac === 0 ? String(whole) : `${whole}.${String(frac).padStart(2, "0").replace(/0$/, "")}`;
   return `${num} standard GPU-hour${num === "1" ? "" : "s"}`;
+}
+
+/** Credits a job costs: its GPU-seconds plus the verification buffer, rounded up. */
+export function creditCost(estGpuSeconds: readonly number[]): number {
+  const total = estGpuSeconds.reduce((s, x) => s + x, 0);
+  return Math.ceil((total * (10_000 + DEFAULT_VERIFICATION_BUFFER_BPS)) / 10_000);
+}
+
+/**
+ * Credits for people: hours once there is at least one, otherwise minutes or
+ * seconds, so a small balance never reads as "0". 31 → "31 standard
+ * GPU-seconds", 754 → "12 standard GPU-minutes", 5400 → "1.5 standard GPU-hours".
+ */
+export function formatCredits(standardSeconds: number): string {
+  checkInt("standardSeconds", standardSeconds, 0, Number.MAX_SAFE_INTEGER);
+  if (standardSeconds >= 3600 || standardSeconds === 0) return formatStandardHours(standardSeconds);
+  if (standardSeconds >= 60) {
+    const m = Math.floor(standardSeconds / 60);
+    return `${m} standard GPU-minute${m === 1 ? "" : "s"}`;
+  }
+  return `${standardSeconds} standard GPU-second${standardSeconds === 1 ? "" : "s"}`;
 }

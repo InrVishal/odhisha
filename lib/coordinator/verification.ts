@@ -3,10 +3,12 @@ import { ownerLedger } from "@/lib/db/schema";
 import { audit } from "@/lib/audit";
 import type { Db } from "@/lib/db/client";
 import { fragments, nodes } from "@/lib/db/schema";
+import { clawBack, clawBackPending } from "@/lib/credits";
 import { bookOwnerReversal, ledgerKeys } from "@/lib/ledger";
+import { recordSample } from "./samples";
 import { requeueLeased, type Q } from "./lifecycle";
 import { fragmentDataKey, getBlob } from "./store";
-import { nextTrust, outputsAgree, pickPiecesToVerify, shouldQuarantine, TRUST_AFTER_RELEASE, type CheckResult } from "./verify";
+import { extraCheckChance, nextTrust, outputsAgree, pickPiecesToVerify, shouldQuarantine, TRUST_AFTER_RELEASE, type CheckResult } from "./verify";
 
 /** A check between two PCs of the same owner can blame but never reward (fake-node farms). */
 async function sameOwner(q: Q, a: string, b: string): Promise<boolean> {
@@ -65,15 +67,24 @@ async function insertCheck(q: Q, of: FragmentRow): Promise<void> {
   });
 }
 
-/** After a piece is done: queue its check if the piece was picked. */
-export async function queueCheckIfPicked(q: Q, done: FragmentRow): Promise<boolean> {
+/**
+ * After a piece is done: queue its check if the piece was picked at confirm
+ * time, or, on top of that, with the chance that brings the PC that did it
+ * up to its own check rate (50% for a new or low-trust PC, see checkRate).
+ */
+export async function queueCheckIfPicked(q: Q, done: FragmentRow, opts: { rate?: number; rand?: () => number } = {}): Promise<boolean> {
   if (done.kind === "verification") return false;
   const [primary] = await q
-    .select({ verify: fragments.verify })
+    .select({ id: fragments.id, verify: fragments.verify })
     .from(fragments)
     .where(and(eq(fragments.jobId, done.jobId), eq(fragments.seq, done.seq), eq(fragments.kind, "primary")))
     .limit(1);
-  if (!primary?.verify) return false;
+  if (!primary) return false;
+  if (!primary.verify) {
+    const extra = extraCheckChance(opts.rate ?? 0);
+    if (extra <= 0 || (opts.rand ?? Math.random)() >= extra) return false;
+    await q.update(fragments).set({ verify: true }).where(eq(fragments.id, primary.id));
+  }
   const existing = await q
     .select({ id: fragments.id })
     .from(fragments)
@@ -149,6 +160,13 @@ export async function resolveCheck(
         { nodeId: firstChecker, result: "fail" },
         { nodeId: me, result: "pass" },
       ];
+      if (first.canary) {
+        await audit(
+          q as Db,
+          { actorId: null, actorType: "system", action: "node.canary_failed", targetType: "node", targetId: firstChecker, meta: { kind: "known_answer", fragmentId: first.id } },
+          ctx.ipSecret,
+        );
+      }
     } else {
       const firstOut = first.outputKey ? await getBlob(q, { dataKey: key, jobId: parent.jobId, key: first.outputKey }) : null;
       if (firstOut && outputsAgree(ctx.workload, firstOut, ctx.output)) {
@@ -162,11 +180,16 @@ export async function resolveCheck(
       } else {
         verdict = "inconclusive";
         results = [checked, firstChecker, me].map((nodeId) => ({ nodeId, result: "inconclusive" as const }));
+        await clawBack(q, parent.id, "its check was inconclusive", ctx.now, ctx.ipSecret);
       }
     }
   }
 
   await q.update(fragments).set({ verdict }).where(eq(fragments.id, check.id));
+  // A known-answer canary that agreed is also a timing run on the coordinator's clock.
+  if (check.canary && verdict === "match" && check.startedAt && check.completedAt) {
+    await recordSample(q, me, check.itemCount, check.completedAt.getTime() - check.startedAt.getTime());
+  }
   // PCs of one owner agreeing with each other proves nothing: no trust for it.
   if (verdict === "match" && !first && (await sameOwner(q, checked, me))) results = [];
   const quarantined: string[] = [];
@@ -194,6 +217,7 @@ async function correctPiece(q: Q, wrong: FragmentRow, right: FragmentRow, ctx: {
       memo: "Pay reversed: this piece failed its check on two other PCs",
     });
   }
+  await clawBack(q, wrong.id, "this piece failed its check on two other PCs", ctx.now, ctx.ipSecret);
   await audit(
     q as Db,
     { actorId: null, actorType: "system", action: "job.piece_corrected", targetType: "job", targetId: wrong.jobId, meta: { seq: wrong.seq, wrongNode: wrong.completedByNodeId } },
@@ -236,6 +260,9 @@ export async function quarantine(q: Q, nodeId: string, trust: number, now: Date,
   if (!done) return false;
   // Anything it holds goes to another PC now.
   await requeueLeased(q, eq(fragments.leaseNodeId, nodeId), now, ipSecret);
+  // Credits for work of this PC that isn't verified yet are taken back.
+  const [owner] = await q.select({ ownerId: nodes.ownerId }).from(nodes).where(eq(nodes.id, nodeId)).limit(1);
+  if (owner) await clawBackPending(q, { id: nodeId, ownerId: owner.ownerId }, "the PC was quarantined before this work was verified", now, ipSecret);
   await audit(q as Db, { actorId: null, actorType: "system", action: "node.quarantined", targetType: "node", targetId: nodeId, meta: { trustScore: trust } }, ipSecret);
   return true;
 }
