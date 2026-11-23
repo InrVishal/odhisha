@@ -4,6 +4,8 @@ import { fragments, jobs, locks, nodes } from "@/lib/db/schema";
 import { markMissedDeadlines, requeueLeased } from "./lifecycle";
 import { HEARTBEAT_TIMEOUT_SEC, needsBackup } from "./schedule";
 import { deleteJobBlobs } from "./store";
+import { penalize } from "./verification";
+import { TRUST_LEASE_EXPIRED } from "./verify";
 
 /**
  * The scheduler tick. Idempotent: running it twice in a row changes nothing
@@ -55,7 +57,14 @@ export async function runTick(db: Db, now: Date, ipSecret: string): Promise<Tick
   const report: TickReport = { ...EMPTY, ran: true };
 
   // 1. Leases that ran out: back in the queue, or failed if out of attempts.
+  //    The PC that let it run out loses a little trust (hoarding work it
+  //    doesn't do costs it; a PC that keeps doing it ends up quarantined).
+  const lapsed = await db
+    .select({ nodeId: fragments.leaseNodeId })
+    .from(fragments)
+    .where(and(eq(fragments.status, "leased"), lt(fragments.leaseExpiresAt, now)));
   report.leasesExpired = await requeueLeased(db, lt(fragments.leaseExpiresAt, now), now, ipSecret);
+  for (const { nodeId } of lapsed) if (nodeId) await penalize(db, nodeId, TRUST_LEASE_EXPIRED, now, ipSecret);
 
   // 2. Nodes that stopped sending heartbeats.
   const offline = await db

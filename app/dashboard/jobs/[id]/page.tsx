@@ -31,7 +31,7 @@ export default async function JobPage({ params }: PageProps<"/dashboard/jobs/[id
       </p>
       <PageTitle
         title={`Job ${shortId(job.id)}`}
-        intro={`${WORKLOADS[job.workloadType].label}: ${job.itemCount} items on ${CLASS_SPECS[job.gpuClass].label}s.`}
+        intro={`${WORKLOADS[job.workloadType].label}, ${job.itemCount} items. Runs on: ${CLASS_SPECS[job.gpuClass].label}.`}
       >
         {job.resultsAvailable ? (
           <a href={`/api/jobs/${job.id}/results`} download className={buttonClass}>
@@ -79,6 +79,28 @@ export default async function JobPage({ params }: PageProps<"/dashboard/jobs/[id
         <Stat label="Finish by" value={when(job.deadlineAt)} note={job.completedAt ? `Finished ${when(job.completedAt)}` : undefined} />
       </div>
 
+      {job.checks.planned > 0 && job.confirmedAt ? (
+        <div className="mt-6">
+          <Card title="Checks">
+            <p className="text-sm text-mist">
+              We re-run {job.checks.planned === 1 ? "1 piece" : `${job.checks.planned} pieces`} of this job on a second PC and
+              compare the results. That&apos;s how we catch a PC that returns wrong answers.
+            </p>
+            <ul className="mt-3 space-y-1 text-sm text-lavender">
+              {job.checks.matched ? <li>{job.checks.matched} matched.</li> : null}
+              {job.checks.corrected ? (
+                <li>
+                  {job.checks.corrected} didn&apos;t match and a third PC confirmed the first result was wrong. We replaced that
+                  piece with the correct result: download the results again to get it.
+                </li>
+              ) : null}
+              {job.checks.inconclusive ? <li>{job.checks.inconclusive} couldn&apos;t be settled: three PCs gave three different results.</li> : null}
+              {job.checks.waiting ? <li>{job.checks.waiting} waiting for a second PC to be free. This never delays your job.</li> : null}
+            </ul>
+          </Card>
+        </div>
+      ) : null}
+
       <div className="mt-6 grid gap-6 md:grid-cols-2">
         <Card title="Price breakdown">
           <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-2 text-sm">
@@ -90,6 +112,12 @@ export default async function JobPage({ params }: PageProps<"/dashboard/jobs/[id
             <dd className="text-right text-lavender">{rupees(b.verificationBufferPaise)}</dd>
             <dt className="text-mist">NightShift fee</dt>
             <dd className="text-right text-lavender">{rupees(b.nightshiftFeePaise)}</dd>
+            {b.minimumTopUpPaise ? (
+              <>
+                <dt className="pl-4 text-xs text-mist">of which top-up to the ₹10 minimum job price</dt>
+                <dd className="text-right text-xs text-mist">{rupees(b.minimumTopUpPaise)}</dd>
+              </>
+            ) : null}
             <dt className="border-t border-navy pt-2 font-semibold text-lavender">Price</dt>
             <dd className="border-t border-navy pt-2 text-right font-semibold text-lavender">{rupees(job.pricePaise)}</dd>
           </dl>

@@ -40,8 +40,11 @@ export const promises: Promise_[] = [
   { text: "Dashboard: download your data and delete your account; ledger keeps records without your email", phase: 5, done: true, proof: "tests/integration/account.test.ts, tests/e2e/dashboard.spec.ts" },
 
   // Phase 6
-  { text: "About 1 piece in 10 re-run on a second PC; trust scores; bad PCs paused", phase: 6, done: false },
-  { text: "Only work that passes checks earns Time-Bank credits", phase: 6, done: false },
+  { text: "Every job costs at least ₹10; the top-up is shown, and owners are paid the same", phase: 6, done: true, proof: "tests/unit/pricing.test.ts (minimum), tests/live/agent-preview.ts (quote)" },
+  { text: "Speed scores come from NightShift's own timed checks, not from what a PC says about itself", phase: 6, done: true, proof: "tests/unit/challenge.test.ts, tests/integration/attacks.test.ts (inflated benchmark), tests/live/agent-preview.ts" },
+  { text: "About 1 piece in 10 re-run on a second PC; trust scores; bad PCs paused", phase: 6, done: true, proof: "tests/unit/verify.test.ts, tests/integration/verification.test.ts, tests/live/agent-preview.ts (second real agent checks the first)" },
+  // Credits are earned from phase 7 on; phase 6 already takes back pay for work that fails its check.
+  { text: "Only work that passes checks earns Time-Bank credits", phase: 7, done: false },
 
   // Phase 7
   { text: "Time-Bank wallet (demo): earn and spend credits; no cash-out, sale or transfer", phase: 7, done: false },

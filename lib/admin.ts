@@ -12,6 +12,15 @@ import { auditLog, buyerLedger, creditLedger, jobs, nodes, ownerLedger, users } 
 
 export const ADMIN_LIST_LIMIT = 100;
 
+/**
+ * True only for a live account whose role is admin in the database right now
+ * (the session's copy of the role is never trusted for admin actions).
+ */
+export async function isAdmin(db: Db, userId: string): Promise<boolean> {
+  const [row] = await db.select({ role: users.role, deletedAt: users.deletedAt }).from(users).where(eq(users.id, userId)).limit(1);
+  return Boolean(row && !row.deletedAt && row.role === "admin");
+}
+
 export async function adminTotals(db: Db) {
   const [[u], [n], [j], [charged], [owners]] = await Promise.all([
     db.select({ c: count() }).from(users),
@@ -42,6 +51,8 @@ export async function adminNodes(db: Db, quarantinedOnly = false) {
       measuredWatts: nodes.measuredWatts,
       wattsEstimated: nodes.wattsEstimated,
       trustScore: nodes.trustScore,
+      checksPassed: nodes.checksPassed,
+      checksFailed: nodes.checksFailed,
       lastSeenAt: nodes.lastSeenAt,
       quarantinedAt: nodes.quarantinedAt,
     })

@@ -1,13 +1,15 @@
 import { z } from "zod";
 import { deleteAccount, exportAccount } from "@/lib/account";
+import { isAdmin } from "@/lib/admin";
 import { AuthzError, type SessionUser } from "@/lib/auth/authz-error";
 import { SESSION_COOKIE_NAMES } from "@/lib/auth/sessions";
 import { audit } from "@/lib/audit";
 import { authenticateAgent, completeFragment, failFragment, failInput, heartbeat, heartbeatInput, leaseFragment, parsePowerHeaders } from "@/lib/coordinator/agent";
-import { CoordinatorError } from "@/lib/coordinator/errors";
+import { CoordinatorError, notFound } from "@/lib/coordinator/errors";
 import { cancelQuote, confirmJob, getJob, listJobs, openResults, quoteJob, quoteRequest, textQuoteRequest } from "@/lib/coordinator/jobs";
 import { getNode, listNodes, registerNode, registerNodeInput, revokeNode, rotateNodeToken, updateNode, updateNodeInput } from "@/lib/coordinator/nodes";
 import { maybeTick, runTick } from "@/lib/coordinator/tick";
+import { heldEarnings, releaseFromQuarantine } from "@/lib/coordinator/verification";
 import { MAX_OUTPUT_BYTES, MAX_REQUEST_BYTES, WORKLOADS, type InputItem } from "@/lib/coordinator/workloads";
 import type { Db } from "@/lib/db/client";
 import { invoicePdf, loadInvoice } from "@/lib/invoice";
@@ -37,6 +39,8 @@ export interface Deps {
   ipSecret: string;
   cronSecret: string;
   limit: (policy: PolicyName, key: string) => Promise<LimitResult>;
+  /** Issue coordinator challenge pieces (canary + timing). Production: on. */
+  challenges?: boolean;
 }
 
 export interface UserDeps extends Deps {
@@ -292,7 +296,9 @@ export function revokeNodeHandler(req: Request, d: UserDeps, nodeId: string): Pr
 export function earningsHandler(_req: Request, d: UserDeps): Promise<Response> {
   return handle(async () => {
     const user = requireUser(d);
-    return json({ earnings: await ownerEarnings(d.db, user.id), demo: true });
+    const earnings = await ownerEarnings(d.db, user.id);
+    const heldPaise = await heldEarnings(d.db, user.id);
+    return json({ earnings: { ...earnings, heldPaise, availablePaise: earnings.balancePaise - heldPaise }, demo: true });
   });
 }
 
@@ -331,6 +337,23 @@ export function deleteAccountHandler(req: Request, d: UserDeps): Promise<Respons
   });
 }
 
+// ─── Admin ─────────────────────────────────────────────────────────────────
+
+/** Lets a quarantined PC take work again. Admins only; anyone else gets a 404. */
+export function releaseNodeHandler(req: Request, d: UserDeps, nodeId: string): Promise<Response> {
+  return handle(async () => {
+    assertSameOrigin(req);
+    const user = requireUser(d);
+    const limited = await limitOr429(d, "nodeManageUser", user.id);
+    if (limited) return limited;
+    if (!(await isAdmin(d.db, user.id)) || !z.uuid().safeParse(nodeId).success) throw notFound();
+    if (!(await releaseFromQuarantine(d.db, nodeId, user.id, d.ipSecret, clientIp(req.headers)))) {
+      throw new CoordinatorError(409, "not_quarantined", "That PC isn't quarantined.");
+    }
+    return json({ released: true });
+  });
+}
+
 // ─── Agent ─────────────────────────────────────────────────────────────────
 
 async function agentAuth(req: Request, d: Deps) {
@@ -352,7 +375,7 @@ export function heartbeatHandler(req: Request, d: Deps): Promise<Response> {
     const a = await agentAuth(req, d);
     if (a.error) return a.error;
     const input = await readJson(req, heartbeatInput, 4 * 1024);
-    return json(await heartbeat(d.db, a.node, input, d.now()));
+    return json(await heartbeat(d.db, a.node, input, d.now(), d.ipSecret));
   });
 }
 
@@ -363,8 +386,8 @@ export function leaseHandler(req: Request, d: Deps): Promise<Response> {
     const now = d.now();
     // Agent polls drive the scheduler (Hobby cron runs only daily).
     await tickQuietly(d);
-    const { lease, reason } = await leaseFragment(d.db, a.node, now, d.keys);
-    if (!lease) return json({ task: null, reason, pollAfterSec: reason === "no_work" ? 10 : 30 });
+    const { lease, reason } = await leaseFragment(d.db, a.node, now, d.keys, { challenges: d.challenges });
+    if (!lease) return json({ task: null, reason, pollAfterSec: reason === "no_work" || reason === "busy" ? 10 : 30 });
     return json(lease);
   });
 }

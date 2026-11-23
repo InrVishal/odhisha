@@ -34,6 +34,7 @@ const invoice = (over: Partial<InvoiceData> = {}): InvoiceData => ({
     verificationBufferPaise: 154,
     nightshiftFeePaise: 363,
     totalPaise: 1800,
+    minimumTopUpPaise: 0,
     gpuSeconds: 1800,
     reference: { watts: 65, tariffPaisePerKwh: 900, ownerRatePaisePerHr: 2500 },
     fragments: 3,

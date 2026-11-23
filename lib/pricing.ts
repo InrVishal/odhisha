@@ -49,6 +49,14 @@ export const DEFAULT_FEE_BPS = 2500;
  */
 export const DEFAULT_OWNER_RATE_PAISE_PER_HR = 2500;
 
+/**
+ * The smallest price a job can have: ₹10. Below it, the fixed costs of a job
+ * (storage, signing, checks, the scheduler) aren't covered. The top-up goes
+ * to the NightShift fee line and is shown separately (`minimumTopUpPaise`);
+ * owners are paid exactly the same.
+ */
+export const MIN_JOB_PRICE_PAISE = 1000;
+
 export interface FragmentPricingInput {
   /** GPU time for this fragment, in whole seconds. */
   gpuSeconds: number;
@@ -69,6 +77,8 @@ export interface PricingOptions {
    * paisa. Can only make a price higher, by at most 2 paise per fragment.
    */
   roundPerFragment?: boolean;
+  /** Minimum total in paise (default MIN_JOB_PRICE_PAISE). Pass 0 for no minimum. */
+  minTotalPaise?: number;
 }
 
 export interface PriceBreakdown {
@@ -82,8 +92,10 @@ export interface PriceBreakdown {
   verificationBufferPaise: number;
   /** NightShift's fee, including the round-up to the next rupee. */
   nightshiftFeePaise: number;
-  /** What the buyer pays. Always a whole number of rupees. */
+  /** What the buyer pays. Always a whole number of rupees, and at least the minimum. */
   totalPaise: number;
+  /** How much of the fee is the top-up to the minimum job price (0 for most jobs). */
+  minimumTopUpPaise: number;
   /** Sum of GPU time across fragments, in seconds. */
   gpuSeconds: number;
 }
@@ -129,8 +141,11 @@ function toNumber(v: bigint): number {
 export function priceJob(fragments: readonly FragmentPricingInput[], options: PricingOptions = {}): PriceBreakdown {
   const bufferBps = options.verificationBufferBps ?? DEFAULT_VERIFICATION_BUFFER_BPS;
   const feeBps = options.feeBps ?? DEFAULT_FEE_BPS;
+  const minTotal = options.minTotalPaise ?? MIN_JOB_PRICE_PAISE;
   checkInt("verificationBufferBps", bufferBps, 0, LIMITS.maxBps);
   checkInt("feeBps", feeBps, 0, LIMITS.maxBps);
+  checkInt("minTotalPaise", minTotal, 0, 1_000_000);
+  if (minTotal % 100 !== 0) throw new PricingInputError("minTotalPaise must be whole rupees");
   if (fragments.length === 0) throw new PricingInputError("a job needs at least one fragment");
   if (fragments.length > LIMITS.maxFragments) throw new PricingInputError("too many fragments");
 
@@ -164,7 +179,8 @@ export function priceJob(fragments: readonly FragmentPricingInput[], options: Pr
   const buffer = ceilDiv(jobCost * BigInt(bufferBps), BPS);
   const buffered = jobCost + buffer;
   const feeBeforeRounding = ceilDiv(buffered * BigInt(feeBps), BPS);
-  const total = ceilDiv(buffered + feeBeforeRounding, 100n) * 100n;
+  const formulaTotal = ceilDiv(buffered + feeBeforeRounding, 100n) * 100n;
+  const total = formulaTotal < BigInt(minTotal) ? BigInt(minTotal) : formulaTotal;
   const fee = total - buffered;
 
   return {
@@ -174,6 +190,7 @@ export function priceJob(fragments: readonly FragmentPricingInput[], options: Pr
     verificationBufferPaise: toNumber(buffer),
     nightshiftFeePaise: toNumber(fee),
     totalPaise: toNumber(total),
+    minimumTopUpPaise: toNumber(total - formulaTotal),
     gpuSeconds: toNumber(gpuSeconds),
   };
 }

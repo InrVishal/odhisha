@@ -14,7 +14,7 @@ import { RETENTION_SEC } from "./schedule";
  *
  * Fragment copies: a piece of a job (`seq`) has one primary fragment and may
  * get backup copies. The piece is done when ANY copy finishes. Verification
- * copies (phase 6) never count towards finishing.
+ * copies (verification.ts) never count towards finishing.
  */
 
 /** Anything with the query methods: the db itself or a transaction. */
@@ -135,11 +135,11 @@ export async function completeJobIfDone(q: Q, jobId: string, now: Date, ipSecret
     .returning();
   if (!updated) return false;
   if (late) await refundJob(q, updated, "deadline_missed", now, ipSecret);
-  // Nothing else needs to run for this job.
+  // No other copy of any piece needs to run. Checks (verification copies) still do.
   await q
     .update(fragments)
     .set({ status: "cancelled" })
-    .where(and(eq(fragments.jobId, jobId), eq(fragments.status, "pending")));
+    .where(and(eq(fragments.jobId, jobId), eq(fragments.status, "pending"), inArray(fragments.kind, [...COUNTED_KINDS])));
   return true;
 }
 

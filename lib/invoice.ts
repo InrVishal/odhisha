@@ -149,6 +149,7 @@ export function invoiceLayout(inv: InvoiceData): { texts: PdfText[]; lines: PdfL
   row("Electricity, paid to owners", money(b.electricityPaise));
   row("Verification buffer (re-running about 10% of pieces)", money(b.verificationBufferPaise));
   row("NightShift fee", money(b.nightshiftFeePaise));
+  if (b.minimumTopUpPaise) row("    of which top-up to the minimum job price", money(b.minimumTopUpPaise));
   lines.push({ x1: L, y1: y - 10, x2: R, y2: y - 10 });
   row("Quoted price", money(b.totalPaise), { bold: true });
   y += 12;

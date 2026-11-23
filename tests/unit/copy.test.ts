@@ -118,7 +118,8 @@ describe("site copy", () => {
   });
 
   it("says demo mode where money is involved", () => {
-    expect(content.site.demoBanner).toMatch(/simulated/);
+    // No banner at the top any more: the footer on every page says it instead.
+    expect(content.site.footer.demo).toMatch(/simulated/);
     expect(content.owners.sections.find((s) => s.heading === "Getting paid")!.body.join(" ")).toMatch(/simulated/);
     expect(content.pricing.calculatorNote).toMatch(/simulated/);
   });

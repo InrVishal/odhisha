@@ -7,6 +7,7 @@ import { AuthzError, requireAdmin } from "@/lib/auth/guards";
 import { CLASS_SPECS } from "@/lib/coordinator/classes";
 import { WORKLOADS } from "@/lib/coordinator/workloads";
 import { pageContext } from "../data";
+import { ReleaseButton } from "./release-button";
 
 export const metadata: Metadata = { title: "Admin" };
 
@@ -34,7 +35,10 @@ export default async function AdminPage() {
 
   return (
     <>
-      <PageTitle title="Admin" intro="Read-only. The newest 100 rows of each list. Account ids only: no emails or IP data here." />
+      <PageTitle
+        title="Admin"
+        intro="The newest 100 rows of each list. Account ids only: no emails or IP data here. The one action is releasing a quarantined PC."
+      />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Stat label="Accounts" value={totals.users} />
@@ -55,7 +59,9 @@ export default async function AdminPage() {
                   <Th>PC</Th>
                   <Th>Owner</Th>
                   <Th right>Trust</Th>
+                  <Th right>Checks failed</Th>
                   <Th>Quarantined</Th>
+                  <Th>Action</Th>
                 </tr>
               </thead>
               <tbody>
@@ -64,7 +70,11 @@ export default async function AdminPage() {
                     <Td>{n.name}</Td>
                     <Td mono>{shortId(n.ownerId)}</Td>
                     <Td right>{n.trustScore}</Td>
+                    <Td right>{n.checksFailed}</Td>
                     <Td>{when(n.quarantinedAt)}</Td>
+                    <Td>
+                      <ReleaseButton nodeId={n.id} name={n.name} />
+                    </Td>
                   </tr>
                 ))}
               </tbody>
@@ -83,9 +93,10 @@ export default async function AdminPage() {
                   <Th>Owner</Th>
                   <Th>Kind</Th>
                   <Th>Status</Th>
-                  <Th right>Benchmark</Th>
+                  <Th right>Measured speed</Th>
                   <Th right>Watts</Th>
                   <Th right>Trust</Th>
+                  <Th right>Checks passed / failed</Th>
                   <Th>Last seen</Th>
                 </tr>
               </thead>
@@ -108,6 +119,9 @@ export default async function AdminPage() {
                     <Td right>{n.benchmarkScore ?? "-"}</Td>
                     <Td right>{n.measuredWatts === null ? "-" : `${n.measuredWatts}${n.wattsEstimated ? " est." : ""}`}</Td>
                     <Td right>{n.trustScore}</Td>
+                    <Td right>
+                      {n.checksPassed} / {n.checksFailed}
+                    </Td>
                     <Td>{when(n.lastSeenAt)}</Td>
                   </tr>
                 ))}

@@ -42,6 +42,19 @@ async function session(client: pg.Client, email: string, role: "user" | "admin" 
   return `__Secure-authjs.session-token=${token}`;
 }
 
+/**
+ * Runs `nightshift-agent start --once` (one piece per run) until `done()`.
+ * A new PC's first piece is a coordinator challenge, so real work comes after.
+ */
+async function runAgentUntil(label: string, env: NodeJS.ProcessEnv, done: () => Promise<boolean>, maxRuns = 3): Promise<void> {
+  for (let i = 0; i < maxRuns; i++) {
+    const out = await run("nightshift-agent", ["start", "--once", "--no-gpu", "--cpu-watts", "65"], { env, timeout: 15 * 60_000 });
+    for (const line of out.stdout.trim().split("\n").concat(out.stderr.trim().split("\n"))) if (line) log(`${label}: ${line}`);
+    if (await done()) return;
+  }
+  fail(`${label} didn't finish its work in ${maxRuns} pieces`);
+}
+
 async function api<T = Record<string, unknown>>(cookie: string, method: string, p: string, json?: unknown): Promise<T> {
   const res = await fetch(BASE + p, {
     method,
@@ -72,6 +85,8 @@ async function main(): Promise<void> {
   const suffix = randomBytes(4).toString("hex");
   const owner = await session(client, `owner-${suffix}@ci.nightshift.test`);
   const buyer = await session(client, `buyer-${suffix}@ci.nightshift.test`);
+  // A second owner for the checking PC: a check by the same owner's PC earns no trust.
+  const owner2 = await session(client, `checker-${suffix}@ci.nightshift.test`);
   // For the signed-in dashboard browser tests that run next (tests/e2e/dashboard.spec.ts).
   await session(client, `admin-${suffix}@ci.nightshift.test`, "admin");
   await client.end();
@@ -83,6 +98,9 @@ async function main(): Promise<void> {
 
   const state = mkdtempSync(path.join(tmpdir(), "ns-agent-"));
   const env = { ...process.env, NIGHTSHIFT_STATE_DIR: state, NIGHTSHIFT_NO_KEYRING: "1", NIGHTSHIFT_VERCEL_BYPASS: BYPASS };
+  // A second agent (its own state, token and node) for the verification check.
+  const state2 = mkdtempSync(path.join(tmpdir(), "ns-agent-"));
+  const env2 = { ...env, NIGHTSHIFT_STATE_DIR: state2 };
   try {
     const login = run("nightshift-agent", ["login", "-", "--api", BASE], { env });
     login.child.stdin!.end(`${reg.token}\n`);
@@ -99,8 +117,8 @@ async function main(): Promise<void> {
     await api(buyer, "POST", `/api/jobs/${jobId}/confirm`);
     log(`job ${jobId.slice(0, 8)} quoted at ${quoted.job.pricePaise} paise, done by ${quoted.job.deadlineAt}; confirmed`);
 
-    const agent = await run("nightshift-agent", ["start", "--once", "--no-gpu", "--cpu-watts", "65"], { env, timeout: 15 * 60_000 });
-    for (const line of agent.stdout.trim().split("\n").concat(agent.stderr.trim().split("\n"))) if (line) log(`agent: ${line}`);
+    // A new PC's first piece is a coordinator challenge; the job's piece comes next.
+    await runAgentUntil("agent", env, async () => (await api<{ job: { status: string } }>(buyer, "GET", `/api/jobs/${jobId}`)).job.status === "completed");
 
     const job = await api<{ job: { status: string; progress: { fragmentsDone: number; fragmentsTotal: number } } }>(buyer, "GET", `/api/jobs/${jobId}`);
     log(`job status ${job.job.status}, ${job.job.progress.fragmentsDone}/${job.job.progress.fragmentsTotal} pieces`);
@@ -125,6 +143,50 @@ async function main(): Promise<void> {
     if (!nodes.nodes[0]?.wattsEstimated) fail("CPU mode watts should be marked estimated");
     log(`PASS: ${items.length} embeddings × 384 dims downloaded by the buyer, all normalised`);
 
+    // Verification: a one-piece job always has its piece checked. A second PC
+    // (another real agent, another real container) re-runs it, and the
+    // coordinator compares the two results.
+    const reg2 = await api<{ node: { id: string }; token: string }>(owner2, "POST", "/api/nodes", { name: "CI checker", gpuClass: "cpu" });
+    await api(owner2, "PATCH", `/api/nodes/${reg2.node.id}`, { nightWindowStartMin: 0, nightWindowEndMin: 0 });
+    const login2 = run("nightshift-agent", ["login", "-", "--api", BASE], { env: env2 });
+    login2.child.stdin!.end(`${reg2.token}\n`);
+    await login2;
+    log(`second node ${reg2.node.id.slice(0, 8)} registered to check the first one's work`);
+    await runAgentUntil("checker", env2, async () => (await api<{ job: { checks: { matched: number } } }>(buyer, "GET", `/api/jobs/${jobId}`)).job.checks.matched === 1);
+    const checked = await api<{ job: { status: string; checks: { planned: number; matched: number; corrected: number; inconclusive: number; waiting: number } } }>(buyer, "GET", `/api/jobs/${jobId}`);
+    log(`job checks: ${JSON.stringify(checked.job.checks)}`);
+    if (checked.job.checks.planned !== 1 || checked.job.checks.matched !== 1) fail("the piece should have been re-run on the second PC and matched");
+    type TrustRow = { id: string; trustScore: number; checksPassed: number; checksFailed: number };
+    const trust = [
+      ...(await api<{ nodes: TrustRow[] }>(owner, "GET", "/api/nodes")).nodes,
+      ...(await api<{ nodes: TrustRow[] }>(owner2, "GET", "/api/nodes")).nodes,
+    ];
+    for (const n of trust) {
+      log(`node ${n.id.slice(0, 8)}: trust ${n.trustScore}, checks passed ${n.checksPassed}, failed ${n.checksFailed}`);
+      if (n.trustScore !== 520 || n.checksPassed !== 1 || n.checksFailed !== 0) fail("both PCs should have passed the check (trust 500 → 520)");
+    }
+    log("PASS: the piece was re-run on a second PC, the results matched, and both PCs' trust went up");
+
+    // Each PC's first piece was a coordinator challenge: a known-answer
+    // canary, timed on the coordinator's clock. A real model must pass it.
+    const db2 = new pg.Client({ connectionString: DB });
+    await db2.connect();
+    try {
+      const ids = [reg.node.id, reg2.node.id];
+      const samples = await db2.query<{ node_id: string; items: number; millis: number }>(
+        "select node_id, items, millis from benchmark_sample where node_id = any($1) order by created_at",
+        [ids],
+      );
+      const canaryFails = await db2.query("select 1 from audit_log where action = 'node.canary_failed' and target_id = any($1)", [ids]);
+      for (const r of samples.rows) {
+        log(`challenge passed by node ${r.node_id.slice(0, 8)}: ${r.items} sentences in ${(r.millis / 1000).toFixed(1)} s (coordinator's clock)`);
+      }
+      if (samples.rows.length < 2 || canaryFails.rows.length > 0) fail("each real agent should have passed one challenge (canary) and been timed");
+      log("PASS: both real agents passed their coordinator challenge (canary) and were timed by the coordinator");
+    } finally {
+      await db2.end();
+    }
+
     // Hand the sessions and the finished job to the dashboard browser tests.
     // A private temp file, never printed: the tokens are live for an hour.
     const authFile = process.env.E2E_AUTH_FILE;
@@ -134,6 +196,7 @@ async function main(): Promise<void> {
     }
   } finally {
     rmSync(state, { recursive: true, force: true });
+    rmSync(state2, { recursive: true, force: true });
   }
 }
 

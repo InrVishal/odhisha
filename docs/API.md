@@ -14,7 +14,7 @@ Writes need a same-origin `Origin` header.
 | POST | `/api/jobs/{id}/confirm` | – | Charges (simulated) and queues the job. 409 `quote_expired` / `not_quoted`. Limited to 10 a minute |
 | POST | `/api/jobs/{id}/cancel` | – | Only for a quote that hasn't been confirmed. Deletes its data now |
 | GET | `/api/jobs` | – | The buyer's last 50 jobs |
-| GET | `/api/jobs/{id}` | – | Status, progress (`fragmentsDone`, `fragmentsTotal`, `nodesWorking`), `refunded`, `netChargedPaise` |
+| GET | `/api/jobs/{id}` | – | Status, progress (`fragmentsDone`, `fragmentsTotal`, `nodesWorking`), `refunded`, `netChargedPaise`, and `checks` (`planned`, `matched`, `corrected`, `inconclusive`, `waiting`): the pieces re-run on a second PC and how that went |
 | GET | `/api/jobs/{id}/results` | – | A streamed download (`Content-Disposition: attachment`): `{ jobId, workloadType, items: [...] }`, one item per input, in input order. 409 until the job finishes, 410 after the 7-day purge |
 | GET | `/api/jobs/{id}/invoice` | – | The invoice as a PDF download: the quote breakdown, the charge and, if the deadline was missed, the refund line. 409 `no_invoice` until the quote is confirmed |
 
@@ -33,11 +33,11 @@ Workloads (`lib/coordinator/workloads.ts`):
 | Method | Path | Body | Notes |
 | --- | --- | --- | --- |
 | POST | `/api/nodes` | `{ name, gpuClass }` | 201 `{ node, token }`. **The token is shown once.** Up to 20 PCs per owner |
-| GET | `/api/nodes` | – | The owner's PCs, with `available` and `unavailableReason` |
+| GET | `/api/nodes` | – | The owner's PCs, with `available`, `unavailableReason`, `trustScore`, `checksPassed`, `checksFailed` |
 | GET / PATCH | `/api/nodes/{id}` | Any of `name`, `tariffPaisePerKwh`, `ownerRatePaisePerHr`, `nightWindowStartMin`, `nightWindowEndMin` (minutes after midnight; start = end means all day), `timezone`, `paused` | |
 | POST | `/api/nodes/{id}/token` | – | New token, shown once. Old ones stop working |
 | DELETE | `/api/nodes/{id}/token` | – | Revoke every token. The agent is locked out, and its work goes back in the queue |
-| GET | `/api/earnings` | – | `computePayPaise`, `powerReimbursementPaise` (its own line), `paidOutPaise`, `balancePaise` |
+| GET | `/api/earnings` | – | `computePayPaise`, `powerReimbursementPaise` (its own line), `paidOutPaise`, `balancePaise`, `heldPaise` (pieces waiting for their check, and everything a quarantined PC earned), `availablePaise` |
 
 Node management is limited to 20 requests an hour.
 
@@ -49,6 +49,27 @@ Node management is limited to 20 requests an hour.
 | DELETE | `/api/account` | `{ "confirm": "DELETE" }` | Removes the email and every login, revokes every PC token, deletes all stored job data now. Ledger rows stay under the account id. 409 `jobs_running` while a job is queued or running. Clears the session cookie |
 
 Both are limited to 5 requests an hour.
+
+## Admin (session cookie, role `admin` in the database)
+
+| Method | Path | Body | Notes |
+| --- | --- | --- | --- |
+| POST | `/api/admin/nodes/{id}/release` | – | Lets a quarantined PC work again, with trust just above the quarantine line. Anyone who isn't an admin (checked in the database on every call) gets a 404. 409 `not_quarantined` |
+
+## Prices
+
+Every job costs at least **₹10** (`MIN_JOB_PRICE_PAISE`). A smaller job is topped up, and the top-up is part of the fee line (`breakdown.minimumTopUpPaise` says how much). Owners are paid the same either way.
+
+## Anti-cheat
+
+- **Challenges:** the coordinator sends each PC signed pieces it made up itself: a new PC's first piece, then about 1 in 20 leases, at most once an hour. They look like any text-embedding piece. The hidden structure (duplicates, UPPERCASE copies, near and far sentences) catches made-up answers (`node.canary_failed`, trust −250, no pay), and the coordinator's own clock times them. A PC's speed score is the median of its last 5 passed runs, with runs more than 2× off the median dropped, after 3 runs. The `benchmarkScore` an agent sends in its heartbeat is stored as `reportedBenchmark` and used for nothing.
+- **One piece at a time:** `POST /api/agent/lease` answers `{ task: null, reason: "busy" }` while the PC holds an unexpired lease. A lease that runs out costs the PC 25 trust.
+- **Replays:** handing in output that already belongs to a different piece is refused with 422 `replayed_output`, and counts as a failed check.
+- **Watts:** reports above the class ceiling (CPU 150 W, RTX 3060 450 W, RTX 4070 550 W, RTX 4090 900 W) are clamped and audited (`node.watts_clamped`).
+
+## Verification
+
+About 1 piece in 10 of every job (at least one) is picked when the buyer confirms. Once a picked piece is done, a **verification copy** is queued. It looks like any other task to an agent, and it's never given to a PC that ran or holds another copy of the same piece. Checks are leased after every other kind of work and never hold up a job. When the outputs disagree, a third PC breaks the tie. See `lib/coordinator/verification.ts`.
 
 ## Agent (`Authorization: Bearer nsn_…`)
 

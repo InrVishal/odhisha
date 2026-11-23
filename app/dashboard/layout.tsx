@@ -33,7 +33,6 @@ export default async function DashboardLayout({ children }: LayoutProps<"/dashbo
 
   return (
     <>
-      <p className="bg-navy px-4 py-2 text-center text-sm text-lavender">{site.demoBanner}</p>
       <header className="border-b border-navy/60">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
           <Link href="/" className="flex items-center gap-2 rounded text-lg font-semibold text-lavender no-underline">
@@ -48,6 +47,8 @@ export default async function DashboardLayout({ children }: LayoutProps<"/dashbo
         </div>
       </header>
       <DashboardNav items={items} />
+      {/* Money is shown on these pages, and it's all simulated: say so on every one. */}
+      <p className="mx-auto mt-4 w-full max-w-6xl px-4 text-sm text-mist sm:px-6">{site.footer.demo} No real money moves.</p>
       <main id="main" className="mx-auto w-full max-w-6xl flex-1 px-4 py-10 sm:px-6">
         {children}
       </main>

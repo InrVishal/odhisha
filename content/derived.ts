@@ -6,6 +6,7 @@ import {
   formatPaise,
   powerCostPerHourPaise,
   priceJob,
+  MIN_JOB_PRICE_PAISE,
 } from "@/lib/pricing";
 import { BASELINE_BENCHMARK_SCORE, clusterCostStandardSeconds, earnedStandardSeconds, formatStandardHours } from "@/lib/timebank";
 
@@ -31,6 +32,7 @@ const HOUR = 3600;
 
 export const copyValues: Record<string, string> = {
   defaultRate: formatPaise(DEFAULT_OWNER_RATE_PAISE_PER_HR),
+  minJob: formatPaise(MIN_JOB_PRICE_PAISE),
   sampleQuote: `${SAMPLE_QUOTE_HOURS} GPU-hours on RTX 4070 PCs at our default owner rate of ${formatPaise(
     DEFAULT_OWNER_RATE_PAISE_PER_HR,
   )} an hour comes to ${formatPaise(sampleQuote.totalPaise)}, done by ${SAMPLE_QUOTE_FINISH}`,

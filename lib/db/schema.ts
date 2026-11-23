@@ -57,6 +57,13 @@ export const jobStatus = pgEnum("job_status", [
 ]);
 export const fragmentStatus = pgEnum("fragment_status", ["pending", "leased", "done", "failed", "cancelled"]);
 export const fragmentKind = pgEnum("fragment_kind", ["primary", "verification", "backup"]);
+/**
+ * A verification copy's result. match: agrees with the copy it checks.
+ * mismatch: disagrees, so a tie-break copy runs. corrected: a tie-break that
+ * sided with the first checker, so the checked copy was wrong and its output
+ * was replaced. inconclusive: a tie-break that agreed with nobody.
+ */
+export const checkVerdict = pgEnum("check_verdict", ["match", "mismatch", "corrected", "inconclusive"]);
 export const ownerEntryType = pgEnum("owner_entry_type", ["power_reimbursement", "compute_pay", "payout", "reversal"]);
 export const buyerEntryType = pgEnum("buyer_entry_type", ["charge", "refund"]);
 export const creditEntryType = pgEnum("credit_entry_type", ["earned", "spent", "reversal"]);
@@ -151,9 +158,19 @@ export const nodes = pgTable(
     measuredWatts: integer("measured_watts"),
     /** True when the reported watts are a declared estimate (CPU mode, no nvidia-smi). */
     wattsEstimated: boolean("watts_estimated").notNull().default(false),
+    /**
+     * Speed score (RTX 3060 = 1000) measured BY THE COORDINATOR from signed
+     * challenge pieces it timed itself: the median of recent runs, outliers
+     * dropped. Null until there are enough runs; the class default is used then.
+     */
     benchmarkScore: integer("benchmark_score"),
+    /** What the agent says its benchmark is. Shown, never used for anything. */
+    reportedBenchmark: integer("reported_benchmark"),
     /** 0..1000. New nodes start in the middle and move with verification results. */
     trustScore: integer("trust_score").notNull().default(500),
+    /** Verification results for work this PC did (as the checked or the checking PC). */
+    checksPassed: integer("checks_passed").notNull().default(0),
+    checksFailed: integer("checks_failed").notNull().default(0),
     status: nodeStatus("status").notNull().default("pending"),
     paused: boolean("paused").notNull().default(false),
     tariffPaisePerKwh: integer("tariff_paise_per_kwh").notNull().default(900),
@@ -233,6 +250,11 @@ export const jobs = pgTable(
     /** Set when the full price was refunded (deadline missed or job failed). */
     refundedAt: timestamp("refunded_at", { withTimezone: true, mode: "date" }),
     fragmentCount: integer("fragment_count").notNull().default(0),
+    /**
+     * Set only on coordinator challenge jobs (known-answer pieces that also
+     * time a PC). Holds what the output must satisfy; never sent to agents.
+     */
+    challenge: jsonb("challenge"),
     /** Inputs and outputs are deleted after this time (default: 7 days). */
     purgeAfter: timestamp("purge_after", { withTimezone: true, mode: "date" }),
     purgedAt: timestamp("purged_at", { withTimezone: true, mode: "date" }),
@@ -258,6 +280,10 @@ export const fragments = pgTable(
     /** For verification and backup runs: the primary fragment they shadow. */
     parentFragmentId: uuid("parent_fragment_id"),
     status: fragmentStatus("status").notNull().default("pending"),
+    /** Primary fragments picked at confirm time to be re-run on a second PC once done. */
+    verify: boolean("verify").notNull().default(false),
+    /** Verification copies only: did its output agree with the copy it checked? */
+    verdict: checkVerdict("verdict"),
     /** GPU-seconds this fragment was priced at, on the job's node class. */
     estGpuSeconds: integer("est_gpu_seconds").notNull(),
     itemCount: integer("item_count").notNull(),
@@ -286,6 +312,21 @@ export const fragments = pgTable(
     check("fragment_attempts_range", sql`${t.attempts} >= 0 and ${t.attempts} <= ${t.maxAttempts}`),
     check("fragment_est_positive", sql`${t.estGpuSeconds} > 0`),
   ],
+);
+
+/** One timed, passed challenge run: the coordinator's own clock, lease to result. */
+export const benchmarkSamples = pgTable(
+  "benchmark_sample",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    nodeId: uuid("node_id")
+      .notNull()
+      .references(() => nodes.id, { onDelete: "cascade" }),
+    items: integer("items").notNull(),
+    millis: integer("millis").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("benchmark_sample_node_idx").on(t.nodeId, t.createdAt), check("benchmark_sample_positive", sql`${t.items} > 0 and ${t.millis} > 0`)],
 );
 
 /**
