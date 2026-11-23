@@ -133,12 +133,16 @@ test.describe("signed in (preview)", () => {
     await page.goto("/dashboard/pcs");
     const pc = page.getByRole("region", { name: "CI runner" });
     await expect(pc).toContainText("65 W (estimated, CPU mode)");
-    await expect(pc).toContainText("(RTX 3060 = 1000)");
+    // Speed comes from NightShift's own timed challenges; the PC's own number is shown, not used.
+    await expect(pc).toContainText("Speed, measured by NightShift");
+    await expect(pc).toContainText("(shown only, not used)");
     await expect(pc).toContainText("All day");
     await expect(pc).toContainText("520 / 1000");
     await expect(pc).toContainText("1 passed, 0 failed");
 
     await page.goto("/dashboard/earnings");
+    // Every dashboard page says money is simulated.
+    await expect(page.getByText(/Demo mode: payments, UPI payouts and GPU EMI are simulated. No real money moves./)).toBeVisible();
     const byPc = page.getByRole("region", { name: "Earnings by PC" });
     await expect(byPc).toContainText("CI runner");
     await expect(page.getByText("Electricity paid back")).toBeVisible();

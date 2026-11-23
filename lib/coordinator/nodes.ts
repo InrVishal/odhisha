@@ -84,7 +84,10 @@ export interface PublicNode {
   available: boolean;
   unavailableReason: string | null;
   paused: boolean;
+  /** Measured by the coordinator (challenge runs); null until enough runs. */
   benchmarkScore: number | null;
+  /** What the agent reported about itself. Display only. */
+  reportedBenchmark: number | null;
   defaultWatts: number;
   measuredWatts: number | null;
   /** True when the watts are the owner's declared estimate (CPU mode). */
@@ -112,6 +115,7 @@ export function toPublicNode(n: NodeRow, now: Date): PublicNode {
     unavailableReason: reason,
     paused: n.paused,
     benchmarkScore: n.benchmarkScore,
+    reportedBenchmark: n.reportedBenchmark,
     defaultWatts: n.defaultWatts,
     measuredWatts: n.measuredWatts,
     wattsEstimated: n.wattsEstimated,

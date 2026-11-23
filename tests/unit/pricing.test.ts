@@ -9,6 +9,7 @@ import {
   DEFAULT_WATTS,
   formatPaise,
   LIMITS,
+  MIN_JOB_PRICE_PAISE,
   parseHoursToSeconds,
   parseRupeesToPaise,
   powerCostPerHourPaise,
@@ -55,6 +56,7 @@ describe("priceJob, worked example", () => {
       verificationBufferPaise: 3378,
       nightshiftFeePaise: 7972,
       totalPaise: 39500,
+      minimumTopUpPaise: 0,
       gpuSeconds: 36000,
     });
   });
@@ -76,10 +78,27 @@ describe("priceJob, worked example", () => {
     expect(mixed.ownerPayPaise).toBe(6000);
   });
 
-  it("rounds a tiny job up to ₹1, never down to ₹0", () => {
-    const tiny = priceJob([{ gpuSeconds: 1, watts: 320, tariffPaisePerKwh: 900, ownerRatePaisePerHr: 0 }]);
+  it("rounds a tiny job up to ₹1 under the bare formula, never down to ₹0", () => {
+    const tiny = priceJob([{ gpuSeconds: 1, watts: 320, tariffPaisePerKwh: 900, ownerRatePaisePerHr: 0 }], { minTotalPaise: 0 });
     expect(tiny.electricityPaise).toBe(1); // 0.08 paise rounds up to 1 paisa
     expect(tiny.totalPaise).toBe(100);
+    expect(tiny.minimumTopUpPaise).toBe(0);
+  });
+
+  it("charges at least the ₹10 minimum; the top-up goes to the fee line and owners are paid the same", () => {
+    const tiny = priceJob([{ gpuSeconds: 60, watts: 65, tariffPaisePerKwh: 900, ownerRatePaisePerHr: 2500 }]);
+    const bare = priceJob([{ gpuSeconds: 60, watts: 65, tariffPaisePerKwh: 900, ownerRatePaisePerHr: 2500 }], { minTotalPaise: 0 });
+    expect(MIN_JOB_PRICE_PAISE).toBe(1000);
+    expect(tiny.totalPaise).toBe(1000);
+    expect(tiny.minimumTopUpPaise).toBe(1000 - bare.totalPaise);
+    expect(tiny.ownerPayPaise).toBe(bare.ownerPayPaise);
+    expect(tiny.electricityPaise).toBe(bare.electricityPaise);
+    expect(tiny.nightshiftFeePaise).toBe(bare.nightshiftFeePaise + tiny.minimumTopUpPaise);
+    expect(tiny.ownerReceivesPaise + tiny.verificationBufferPaise + tiny.nightshiftFeePaise).toBe(tiny.totalPaise);
+  });
+
+  it("refuses a minimum that isn't whole rupees", () => {
+    expect(() => priceJob([{ gpuSeconds: 60, watts: 65, tariffPaisePerKwh: 900, ownerRatePaisePerHr: 0 }], { minTotalPaise: 150 })).toThrow(/whole rupees/);
   });
 });
 
@@ -198,7 +217,8 @@ describe("pricing properties", () => {
   it("matches the brief's formula to within the round-ups (under ₹1 + 4 paise)", () => {
     fc.assert(
       fc.property(fragmentsArb, optionsArb, (fs, opts) => {
-        const b = priceJob(fs, opts);
+        // The brief's formula itself has no minimum.
+        const b = priceJob(fs, { ...opts, minTotalPaise: 0 });
         // Exact formula in rationals over a common denominator D.
         const D = 3_600_000n * 10_000n * 10_000n;
         const jobCost = exactPowerNumerator(fs) + exactOwnerPayNumerator(fs) * 1000n; // over 3,600,000
@@ -287,6 +307,7 @@ describe("default owner rate and the deck example", () => {
       verificationBufferPaise: 4730,
       nightshiftFeePaise: 11060,
       totalPaise: 55200,
+      minimumTopUpPaise: 0,
       gpuSeconds: 50400,
     });
   });
@@ -315,7 +336,7 @@ describe("all-in price per GPU-hour", () => {
         fc.integer({ min: 0, max: LIMITS.maxOwnerRatePaisePerHr }),
         (hours, watts, tariff, rate) => {
           const perHour = allInPerGpuHourPaise(watts, tariff, rate);
-          const total = priceJob([{ gpuSeconds: hours * 3600, watts, tariffPaisePerKwh: tariff, ownerRatePaisePerHr: rate }]).totalPaise;
+          const total = priceJob([{ gpuSeconds: hours * 3600, watts, tariffPaisePerKwh: tariff, ownerRatePaisePerHr: rate }], { minTotalPaise: 0 }).totalPaise;
           // Per-hour rounds up once per hour, the job rounds up once overall,
           // so the job is never more than ₹1 above hours × per-hour, and
           // never below it by more than the per-hour round-ups (< 4 paise/hr).

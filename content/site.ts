@@ -264,7 +264,7 @@ export const builders = {
 export const pricing = {
   meta: nav[3]!,
   heading: "What a job costs, line by line",
-  intro: "We start with the owner's electricity, add their hourly rate, add 12% to pay for checking the results, then add our 25% fee. The total is rounded up to the next rupee.",
+  intro: "We start with the owner's electricity, add their hourly rate, add 12% to pay for checking the results, then add our 25% fee. The total is rounded up to the next rupee, and every job costs at least {minJob}.",
   formulaHeading: "The formula",
   formula: [
     "Electricity per hour = the PC's power draw in kW × the tariff per unit (kWh)",
@@ -272,6 +272,7 @@ export const pricing = {
     "Job cost = GPU hours × owner cost per hour, added up over every piece",
     "With checks = job cost + 12% verification buffer",
     "Price = with checks + 25% NightShift fee, rounded up to the rupee",
+    "Minimum price per job: {minJob}",
   ],
   drawHeading: "Default power draw",
   drawNote: "These are whole-PC numbers while the GPU is busy. Once the app measures your real draw, we use that.",
@@ -297,7 +298,7 @@ export const pricing = {
       ownerPay: "Owner's pay",
       electricity: "Owner's electricity",
       buffer: "Verification buffer (12%)",
-      fee: "NightShift fee (25%, plus round-up)",
+      fee: "NightShift fee (25%, plus round-up and any top-up to the minimum)",
       total: "Total you pay",
     },
     ownerGets: "The owner receives {ownerReceives}, and {electricity} of that is their electricity.",
@@ -307,6 +308,7 @@ export const pricing = {
   notes: [
     "If the job isn't done by the finish time on your quote, you pay ₹0.",
     "The fee line includes the round-up to the next rupee, so it can be a few paise above 25%.",
+    "Every job costs at least {minJob}. A smaller job is topped up to {minJob}, and the top-up goes on our fee line: owners are paid exactly the same.",
     "Prices are worked out in paise, with whole-number maths. Nothing is lost to rounding, and every line in the breakdown adds up to the total.",
   ],
 };

@@ -26,13 +26,15 @@ The copy describes the finished prototype. Each phase ticks off what it delivers
 - [x] **Phase 5:** Invoices (PDF) show the deadline refund line automatically (proof: `tests/unit/pdf.test.ts, tests/integration/dashboard.test.ts (refund line), tests/e2e/dashboard.spec.ts`)
 - [x] **Phase 5:** Owner earnings show electricity as its own line; owners see every piece their PC ran (proof: `tests/integration/dashboard.test.ts (ownerPieces, earningsByNode), tests/e2e/dashboard.spec.ts`)
 - [x] **Phase 5:** Dashboard: download your data and delete your account; ledger keeps records without your email (proof: `tests/integration/account.test.ts, tests/e2e/dashboard.spec.ts`)
+- [x] **Phase 6:** Every job costs at least ₹10; the top-up is shown, and owners are paid the same (proof: `tests/unit/pricing.test.ts (minimum), tests/live/agent-preview.ts (quote)`)
+- [x] **Phase 6:** Speed scores come from NightShift's own timed checks, not from what a PC says about itself (proof: `tests/unit/challenge.test.ts, tests/integration/attacks.test.ts (inflated benchmark), tests/live/agent-preview.ts`)
 - [x] **Phase 6:** About 1 piece in 10 re-run on a second PC; trust scores; bad PCs paused (proof: `tests/unit/verify.test.ts, tests/integration/verification.test.ts, tests/live/agent-preview.ts (second real agent checks the first)`)
 - [ ] **Phase 7:** Only work that passes checks earns Time-Bank credits
 - [ ] **Phase 7:** Time-Bank wallet (demo): earn and spend credits; no cash-out, sale or transfer
 - [ ] **Phase 7:** GPU-on-EMI simulator (demo only, no lending)
 - [ ] **Phase 8:** Sentry error reports with personal details removed
 
-Done: 18 of 23.
+Done: 20 of 25.
 
 **Still open from you:** set `CONTACT_EMAIL` in Vercel so the privacy page can show a real address.
 
@@ -204,7 +206,7 @@ _Search description:_ Every line of a NightShift price, with a calculator. Elect
 
 # What a job costs, line by line
 
-We start with the owner's electricity, add their hourly rate, add 12% to pay for checking the results, then add our 25% fee. The total is rounded up to the next rupee.
+We start with the owner's electricity, add their hourly rate, add 12% to pay for checking the results, then add our 25% fee. The total is rounded up to the next rupee, and every job costs at least {minJob}.
 
 ### Try it
 
@@ -212,7 +214,7 @@ Owners start at our default rate of ₹25 an hour, and each owner can set their 
 
 Calculator labels: GPU class; GPU hours (Total GPU time across all pieces of the job.); Electricity tariff (₹ per unit) (₹9 is our default. Use your own if you know it.); Owner's rate (₹ per hour) (₹25 is our default. Owners can change it.)
 
-Breakdown lines: Owner's pay / Owner's electricity / Verification buffer (12%) / NightShift fee (25%, plus round-up) / Total you pay
+Breakdown lines: Owner's pay / Owner's electricity / Verification buffer (12%) / NightShift fee (25%, plus round-up and any top-up to the minimum) / Total you pay
 
 Under the breakdown: The owner receives {ownerReceives}, and {electricity} of that is their electricity. That's {perHour} per GPU-hour, all in.
 
@@ -233,6 +235,7 @@ A job's total is this rate × its GPU-hours, rounded up to the next rupee. For e
 3. Job cost = GPU hours × owner cost per hour, added up over every piece
 4. With checks = job cost + 12% verification buffer
 5. Price = with checks + 25% NightShift fee, rounded up to the rupee
+6. Minimum price per job: {minJob}
 
 ### Default power draw
 
@@ -244,6 +247,7 @@ These are whole-PC numbers while the GPU is busy. Once the app measures your rea
 
 - If the job isn't done by the finish time on your quote, you pay ₹0.
 - The fee line includes the round-up to the next rupee, so it can be a few paise above 25%.
+- Every job costs at least {minJob}. A smaller job is topped up to {minJob}, and the top-up goes on our fee line: owners are paid exactly the same.
 - Prices are worked out in paise, with whole-number maths. Nothing is lost to rounding, and every line in the breakdown adds up to the total.
 
 ## Time-Bank (`/time-bank`)

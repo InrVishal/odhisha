@@ -17,6 +17,7 @@ export async function deps(): Promise<Deps> {
     ipSecret: ipHashSecret(),
     cronSecret: env.CRON_SECRET,
     limit: checkLimit,
+    challenges: true,
   };
 }
 

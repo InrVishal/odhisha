@@ -1,4 +1,5 @@
-import { aliasedTable, and, asc, desc, eq, gte, inArray, isNull, lt, ne, notExists, or, sql } from "drizzle-orm";
+import { aliasedTable, and, asc, desc, eq, gt, gte, inArray, isNull, lt, ne, notExists, or, sql } from "drizzle-orm";
+import { audit } from "@/lib/audit";
 import { z } from "zod";
 import type { Db } from "@/lib/db/client";
 import { fragments, jobs, nodes, nodeTokens } from "@/lib/db/schema";
@@ -10,7 +11,10 @@ import type { CoordinatorKeys } from "@/lib/security/keys";
 import { MAX_BENCHMARK_SCORE } from "@/lib/timebank";
 import { CoordinatorError } from "./errors";
 import { cancelSiblings, completeJobIfDone, failJobIfPieceDead, type Q } from "./lifecycle";
-import { queueCheckIfPicked, resolveCheck } from "./verification";
+import { queueCheckIfPicked, resolveCheck, applyCheck } from "./verification";
+import { wantsChallenge } from "./challenge";
+import { createChallenge, lastChallengeAt, settleChallenge, type StoredChallenge } from "./challenge-db";
+import { clampWatts } from "./classes";
 import { toNodeView, type NodeRow } from "./nodes";
 import {
   fragmentPay,
@@ -60,7 +64,7 @@ export const heartbeatInput = z.strictObject({
   wattsSource: z.enum(["nvidia-smi", "estimated"]).optional(),
   gpuModel: z.string().trim().min(1).max(128).optional(),
   vramMb: z.int().min(0).max(1_048_576).optional(),
-  /** Self-reported until verification (phase 6) can check it; capped. */
+  /** What the agent measured itself. Stored for display only: scheduling uses the coordinator's own challenge timings. */
   benchmarkScore: z.int().min(1).max(MAX_BENCHMARK_SCORE).optional(),
   agentVersion: z.string().max(32).optional(),
 });
@@ -76,16 +80,22 @@ export interface HeartbeatReply {
   pollAfterSec: number;
 }
 
-export async function heartbeat(db: Db, node: NodeRow, input: z.infer<typeof heartbeatInput>, now: Date): Promise<HeartbeatReply> {
-  const patch: Partial<typeof nodes.$inferInsert> = { lastSeenAt: now };
-  if (node.status === "pending" || node.status === "offline") patch.status = "online";
-  if (input.watts) {
-    patch.measuredWatts = nextMeasuredWatts(node.measuredWatts, input.watts);
-    patch.wattsEstimated = input.wattsSource === "estimated";
+/** Folds a power report into the node's rolling average, capped at the class ceiling. */
+async function powerPatch(db: Db, node: NodeRow, watts: number, source: "nvidia-smi" | "estimated" | undefined, ipSecret?: string) {
+  const { watts: capped, clamped } = clampWatts(node.gpuClass, watts);
+  if (clamped && ipSecret) {
+    await audit(db, { actorId: null, actorType: "node", action: "node.watts_clamped", targetType: "node", targetId: node.id, meta: { reported: watts, used: capped } }, ipSecret);
   }
+  return { measuredWatts: nextMeasuredWatts(node.measuredWatts, capped), wattsEstimated: source === "estimated" };
+}
+
+export async function heartbeat(db: Db, node: NodeRow, input: z.infer<typeof heartbeatInput>, now: Date, ipSecret?: string): Promise<HeartbeatReply> {
+  let patch: Partial<typeof nodes.$inferInsert> = { lastSeenAt: now };
+  if (node.status === "pending" || node.status === "offline") patch.status = "online";
+  if (input.watts) patch = { ...patch, ...(await powerPatch(db, node, input.watts, input.wattsSource, ipSecret)) };
   if (input.gpuModel) patch.gpuModel = input.gpuModel;
   if (input.vramMb !== undefined) patch.vramMb = input.vramMb;
-  if (input.benchmarkScore) patch.benchmarkScore = input.benchmarkScore;
+  if (input.benchmarkScore) patch.reportedBenchmark = input.benchmarkScore;
   const [updated] = await db.update(nodes).set(patch).where(eq(nodes.id, node.id)).returning();
   const reason = unavailableReason(toNodeView(updated!), now);
   return {
@@ -116,12 +126,22 @@ export interface LeaseReply {
  * Taking the fragment is one conditional UPDATE (`WHERE status = 'pending'`):
  * if two nodes race for it, exactly one wins and the other tries the next.
  */
+/** Before this, a check isn't given to a PC of the same owner as the PC it checks. */
+export const SAME_OWNER_CHECK_AFTER_SEC = 30 * 60;
+
+export interface LeaseOptions {
+  /** Issue coordinator challenges (canary + timing). On in production; tests switch it on when they test it. */
+  challenges?: boolean;
+  rand?: (max: number) => number;
+}
+
 export async function leaseFragment(
   db: Db,
   node: NodeRow,
   now: Date,
   keys: Pick<CoordinatorKeys, "signingKey" | "publicKey" | "dataKey">,
-): Promise<{ lease: LeaseReply | null; reason: Unavailable | "no_work" | null }> {
+  opts: LeaseOptions = {},
+): Promise<{ lease: LeaseReply | null; reason: Unavailable | "no_work" | "busy" | null }> {
   const [fresh] = await db
     .update(nodes)
     .set({ lastSeenAt: now, ...(node.status === "pending" || node.status === "offline" ? { status: "online" as const } : {}) })
@@ -131,6 +151,20 @@ export async function leaseFragment(
   const reason = unavailableReason(view, now);
   if (reason) return { lease: null, reason };
 
+  // One piece at a time. A PC can't sit on a pile of leases (hoarding):
+  // the agent runs one container at a time anyway.
+  const holding = await db
+    .select({ id: fragments.id })
+    .from(fragments)
+    .where(and(eq(fragments.leaseNodeId, node.id), eq(fragments.status, "leased"), gt(fragments.leaseExpiresAt, now)))
+    .limit(1);
+  if (holding.length) return { lease: null, reason: "busy" };
+
+  if (opts.challenges && wantsChallenge({ measured: fresh!.benchmarkScore !== null, lastChallengeAt: await lastChallengeAt(db, node.id), now, rand: opts.rand })) {
+    const { fragment, job } = await createChallenge(db, fresh!, now, keys.dataKey, opts.rand);
+    return { lease: await signLease(db, node, fragment, job, keys, now), reason: null };
+  }
+
   const sibling = aliasedTable(fragments, "sibling");
   const candidates = await db
     .select({ f: fragments, j: jobs })
@@ -139,6 +173,8 @@ export async function leaseFragment(
     .where(
       and(
         eq(fragments.status, "pending"),
+        // Challenges are made for one PC and leased on creation, never from the pool.
+        isNull(jobs.challenge),
         lt(fragments.attempts, fragments.maxAttempts),
         or(
           and(inArray(fragments.kind, ["primary", "backup"]), inArray(jobs.status, ["queued", "running", "deadline_missed"])),
@@ -170,6 +206,17 @@ export async function leaseFragment(
 
   const closes = windowEndsAt(now, view.window);
   for (const { f, j } of candidates) {
+    // Prefer a different owner for checks (two PCs of one person could agree
+    // on a wrong answer). Small setups with one owner still get checked, later.
+    if (f.kind === "verification" && f.parentFragmentId) {
+      const [checked] = await db
+        .select({ ownerId: nodes.ownerId, doneAt: fragments.completedAt })
+        .from(fragments)
+        .innerJoin(nodes, eq(nodes.id, fragments.completedByNodeId))
+        .where(eq(fragments.id, f.parentFragmentId))
+        .limit(1);
+      if (checked?.ownerId === fresh!.ownerId && checked.doneAt && now.getTime() - checked.doneAt.getTime() < SAME_OWNER_CHECK_AFTER_SEC * 1000) continue;
+    }
     const spec = WORKLOADS[j.workloadType];
     const expected = estimateSeconds(spec, f.itemCount, nodeBenchmark(view));
     if (closes && now.getTime() + expected * 1000 > closes.getTime()) continue;
@@ -188,7 +235,23 @@ export async function leaseFragment(
       .returning();
     if (!taken) continue;
     await db.update(jobs).set({ status: "running" }).where(and(eq(jobs.id, j.id), eq(jobs.status, "queued")));
+    return { lease: await signLease(db, node, taken, j, keys, now), reason: null };
+  }
+  return { lease: null, reason: "no_work" };
+}
 
+/** Signs a leased fragment into a task for this node, with its input. */
+async function signLease(
+  db: Db,
+  node: Pick<NodeRow, "id">,
+  taken: typeof fragments.$inferSelect,
+  j: typeof jobs.$inferSelect,
+  keys: Pick<CoordinatorKeys, "signingKey" | "publicKey" | "dataKey">,
+  now: Date,
+): Promise<LeaseReply> {
+  const spec = WORKLOADS[j.workloadType];
+  const leaseUntil = taken.leaseExpiresAt!;
+  {
     const input = await getBlob(db, { dataKey: fragmentDataKey(keys.dataKey, taken), jobId: j.id, key: taken.inputKey });
     if (!input || sha256Hex(input) !== taken.inputSha256) throw new Error("fragment input missing or corrupt");
     const task = signTask(
@@ -210,9 +273,8 @@ export async function leaseFragment(
       keys.signingKey,
       keys.publicKey,
     );
-    return { lease: { task, input: input.toString("base64"), leaseExpiresAt: leaseUntil.toISOString() }, reason: null };
+    return { task, input: input.toString("base64"), leaseExpiresAt: leaseUntil.toISOString() };
   }
-  return { lease: null, reason: "no_work" };
 }
 
 async function leasedFragment(db: Q, nodeId: string, fragmentId: string, attempt: number, now: Date) {
@@ -272,17 +334,52 @@ export async function completeFragment(
 
   // The reading taken while this fragment ran updates the node's watts first,
   // so the owner is paid for the electricity this work actually drew.
+  // Replay: the exact output of a DIFFERENT piece handed in again. Only for
+  // workloads where two different inputs can't honestly give identical output.
+  if (j.workloadType !== "image_captioning") {
+    const [seen] = await db
+      .select({ id: fragments.id })
+      .from(fragments)
+      .where(and(eq(fragments.outputDigest, args.sha256), ne(fragments.inputSha256, f.inputSha256)))
+      .limit(1);
+    if (seen) {
+      await failFragment(db, node, { fragmentId: f.id, attempt: args.attempt, now: args.now, ipSecret: args.ipSecret });
+      await applyCheck(db, node.id, "fail", args.now, args.ipSecret);
+      await audit(db, { actorId: null, actorType: "system", action: "node.replay_rejected", targetType: "node", targetId: node.id, meta: { fragmentId: f.id } }, args.ipSecret);
+      throw new CoordinatorError(422, "replayed_output", "This output belongs to a different piece.");
+    }
+  }
+
   let payNode = node;
   if (args.power) {
     const [updated] = await db
       .update(nodes)
-      .set({ measuredWatts: nextMeasuredWatts(node.measuredWatts, args.power.watts), wattsEstimated: args.power.source === "estimated" })
+      .set(await powerPatch(db, node, args.power.watts, args.power.source, args.ipSecret))
       .where(eq(nodes.id, node.id))
       .returning();
     if (updated) payNode = updated;
   }
   const view = toNodeView(payNode);
   const pay = fragmentPay(view, f.estGpuSeconds);
+
+  if (j.challenge) {
+    // A coordinator challenge: never billed; paid only if it passes.
+    return db.transaction(async (tx) => {
+      const [done] = await tx
+        .update(fragments)
+        .set({ status: "done", outputDigest: args.sha256, completedAt: args.now, completedByNodeId: node.id, leaseExpiresAt: null })
+        .where(and(eq(fragments.id, f.id), eq(fragments.status, "leased"), eq(fragments.attempts, args.attempt), eq(fragments.leaseNodeId, node.id)))
+        .returning({ id: fragments.id });
+      if (!done) throw new CoordinatorError(409, "lease_lost", "This lease is no longer yours. Drop the result.");
+      await tx.update(jobs).set({ status: "completed", completedAt: args.now }).where(eq(jobs.id, j.id));
+      const result = await settleChallenge(tx, node, { spec: j.challenge as StoredChallenge, output: args.body, startedAt: f.startedAt ?? args.now, now: args.now, ipSecret: args.ipSecret });
+      if (!result.passed) return { accepted: true, paidPaise: 0 };
+      const memo = "speed and accuracy check";
+      await bookOwner(tx, { ownerId: node.ownerId, nodeId: node.id, jobId: j.id, fragmentId: f.id, entryType: "power_reimbursement", amountPaise: pay.electricityPaise, idempotencyKey: ledgerKeys.power(f.id), memo: `Electricity for ${memo}` });
+      await bookOwner(tx, { ownerId: node.ownerId, nodeId: node.id, jobId: j.id, fragmentId: f.id, entryType: "compute_pay", amountPaise: pay.ownerPayPaise, idempotencyKey: ledgerKeys.computePay(f.id), memo: `Compute for ${memo}` });
+      return { accepted: true, paidPaise: pay.electricityPaise + pay.ownerPayPaise };
+    });
+  }
 
   return db.transaction(async (tx) => {
     let accepted = false;

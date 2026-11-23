@@ -1,4 +1,5 @@
 import { and, asc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
+import { ownerLedger } from "@/lib/db/schema";
 import { audit } from "@/lib/audit";
 import type { Db } from "@/lib/db/client";
 import { fragments, nodes } from "@/lib/db/schema";
@@ -6,6 +7,12 @@ import { bookOwnerReversal, ledgerKeys } from "@/lib/ledger";
 import { requeueLeased, type Q } from "./lifecycle";
 import { fragmentDataKey, getBlob } from "./store";
 import { nextTrust, outputsAgree, pickPiecesToVerify, shouldQuarantine, TRUST_AFTER_RELEASE, type CheckResult } from "./verify";
+
+/** A check between two PCs of the same owner can blame but never reward (fake-node farms). */
+async function sameOwner(q: Q, a: string, b: string): Promise<boolean> {
+  const rows = await q.select({ ownerId: nodes.ownerId }).from(nodes).where(inArray(nodes.id, [a, b]));
+  return rows.length === 2 && rows[0]!.ownerId === rows[1]!.ownerId;
+}
 import type { WorkloadType } from "./workloads";
 
 /**
@@ -160,6 +167,8 @@ export async function resolveCheck(
   }
 
   await q.update(fragments).set({ verdict }).where(eq(fragments.id, check.id));
+  // PCs of one owner agreeing with each other proves nothing: no trust for it.
+  if (verdict === "match" && !first && (await sameOwner(q, checked, me))) results = [];
   const quarantined: string[] = [];
   for (const r of results) if (await applyCheck(q, r.nodeId, r.result, ctx.now, ctx.ipSecret)) quarantined.push(r.nodeId);
   return { verdict, results, quarantined };
@@ -194,9 +203,18 @@ async function correctPiece(q: Q, wrong: FragmentRow, right: FragmentRow, ctx: {
 
 /** Records one check result on a PC. Returns true if it was quarantined by it. */
 export async function applyCheck(q: Q, nodeId: string, result: CheckResult, now: Date, ipSecret: string): Promise<boolean> {
+  return adjustTrust(q, nodeId, (t) => nextTrust(t, result), result, now, ipSecret);
+}
+
+/** Takes `points` off a PC's trust (no check counted), quarantining it if it falls below the line. */
+export async function penalize(q: Q, nodeId: string, points: number, now: Date, ipSecret: string): Promise<boolean> {
+  return adjustTrust(q, nodeId, (t) => Math.max(0, t - points), null, now, ipSecret);
+}
+
+async function adjustTrust(q: Q, nodeId: string, next: (t: number) => number, result: CheckResult | null, now: Date, ipSecret: string): Promise<boolean> {
   const [n] = await q.select({ trustScore: nodes.trustScore, status: nodes.status }).from(nodes).where(eq(nodes.id, nodeId)).limit(1);
   if (!n) return false;
-  const trust = nextTrust(n.trustScore, result);
+  const trust = next(n.trustScore);
   await q
     .update(nodes)
     .set({
@@ -264,4 +282,42 @@ export async function jobChecks(q: Q, jobId: string): Promise<JobChecks> {
     else out.waiting += 1;
   }
   return out;
+}
+
+/**
+ * Earnings not yet paid out: pay for pieces still waiting for (or in the
+ * middle of) their check, and everything a quarantined PC earned. Payouts are
+ * simulated, so "held" means the payout run would skip it.
+ */
+export async function heldEarnings(q: Q, ownerId: string): Promise<number> {
+  const [row] = await q
+    .select({
+      held: sql<string | null>`coalesce(sum(${ownerLedger.amountPaise}), 0)`,
+    })
+    .from(ownerLedger)
+    .innerJoin(nodes, eq(nodes.id, ownerLedger.nodeId))
+    .leftJoin(fragments, eq(fragments.id, ownerLedger.fragmentId))
+    .where(
+      and(
+        eq(ownerLedger.ownerId, ownerId),
+        sql`(
+          ${nodes.status} = 'quarantined'
+          or exists (
+            select 1 from fragment p
+            where p.job_id = ${fragments.jobId} and p.seq = ${fragments.seq} and p.kind = 'primary' and p.verify
+              and ${fragments.kind} <> 'verification'
+              and not exists (
+                select 1 from fragment v
+                where v.job_id = p.job_id and v.seq = p.seq and v.kind = 'verification'
+                  and v.verdict in ('match', 'corrected', 'inconclusive')
+              )
+              and exists (
+                select 1 from fragment w
+                where w.job_id = p.job_id and w.seq = p.seq and w.kind = 'verification' and w.status in ('pending', 'leased', 'done')
+              )
+          )
+        )`,
+      ),
+    );
+  return Number(row?.held ?? 0);
 }

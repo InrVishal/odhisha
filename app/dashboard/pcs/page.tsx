@@ -46,7 +46,11 @@ export default async function PcsPage() {
               ) : null}
               <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
                 <Item label="Kind" value={`${CLASS_SPECS[n.gpuClass].label}${n.gpuModel ? ` (${n.gpuModel})` : ""}`} />
-                <Item label="Benchmark" value={n.benchmarkScore === null ? "Runs on first start" : `${n.benchmarkScore} (RTX 3060 = 1000)`} />
+                <Item
+                  label="Speed, measured by NightShift"
+                  value={n.benchmarkScore === null ? "Not measured yet (needs 3 checks)" : `${n.benchmarkScore} (RTX 3060 = 1000)`}
+                />
+                {n.reportedBenchmark !== null ? <Item label="Speed the PC reports" value={`${n.reportedBenchmark} (shown only, not used)`} /> : null}
                 <Item
                   label="Power draw"
                   value={n.measuredWatts === null ? `${n.defaultWatts} W (class default)` : `${n.measuredWatts} W${n.wattsEstimated ? " (estimated, CPU mode)" : " (measured)"}`}

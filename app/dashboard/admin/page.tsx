@@ -93,7 +93,7 @@ export default async function AdminPage() {
                   <Th>Owner</Th>
                   <Th>Kind</Th>
                   <Th>Status</Th>
-                  <Th right>Benchmark</Th>
+                  <Th right>Measured speed</Th>
                   <Th right>Watts</Th>
                   <Th right>Trust</Th>
                   <Th right>Checks passed / failed</Th>

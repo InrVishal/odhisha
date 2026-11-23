@@ -43,6 +43,13 @@
       "when": 1795401966295,
       "tag": "0005_verification",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795407729973,
+      "tag": "0006_anticheat",
+      "breakpoints": true
     }
   ]
 }

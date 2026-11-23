@@ -138,3 +138,18 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres npm run t
   - quarantine below trust 200: the agent is refused (403), its held work goes back in the queue for another PC, it's audited; owners and non-admins get a 404 on release, an admin can release once (then 409), audited with the admin's id.
 - **Live** (`tests/live/agent-preview.ts`, every preview): after the real agent finishes the job, a second real agent on its own node picks up the check, runs the same piece in its own container, and the coordinator compares the two: the job reports 1 matched check and both PCs have trust 520.
 - **E2E** (`tests/e2e/dashboard.spec.ts`): the buyer's job page shows the matched check; the owner's PC shows trust 520 and "1 passed, 0 failed".
+
+**Attack table** (`tests/integration/attacks.test.ts`, one test per attack; plus `tests/unit/challenge.test.ts` and the live test):
+
+| Attack | Detected | How fast | Consequence |
+| --- | --- | --- | --- |
+| Random or lazy outputs on a real job | Yes, when the piece is one of the ~10% re-run | When a second (and third) PC has re-run it | Trust 500→250, compute pay for the piece reversed, buyer's piece replaced with the agreed result; pay held until then |
+| Random or lazy answers to a challenge (canary failed) | Yes, every time | On hand-in | Trust −250, no pay, audited; a second failure quarantines (agent refused) |
+| Slightly wrong outputs (beyond float noise) | Yes, when re-run | As above | As above. Float noise (cosine ≥ 0.995) is accepted by design |
+| Replayed result: another piece's output | Yes | On hand-in (422) | Counted as a failed check (trust −250), piece requeued for another PC |
+| Replayed result: same hand-in twice | Yes | On hand-in (409) | Paid once |
+| Inflated benchmark | Yes: the claim is ignored | Immediately | Score comes only from challenges timed on the coordinator's clock (median of 5, outliers dropped) |
+| Inflated watts | Yes | On the report | Clamped to the class ceiling, audited |
+| Lease hoarding | Yes | On the second lease request ("busy"), and at expiry | Piece requeued; trust −25 per lapsed lease, quarantine below 200 |
+| Many fake nodes on one account | Partly | At lease and check time | 20 PCs per account; same-owner checks wait 30 min and earn no trust |
+| Payout held | n/a | While a check is open, or the PC is quarantined | `heldPaise` in `/api/earnings` and on the dashboard |

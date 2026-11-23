@@ -163,6 +163,9 @@ export const QUARANTINE_BELOW = MIN_TRUST_FOR_WORK;
 /** Where an admin release puts a PC: just above the line, so one more failure quarantines it again. */
 export const TRUST_AFTER_RELEASE = QUARANTINE_BELOW + 100;
 
+/** Taking a piece and letting its lease run out (hoarding, or just going away). */
+export const TRUST_LEASE_EXPIRED = 25;
+
 export type CheckResult = "pass" | "fail" | "inconclusive";
 
 export function nextTrust(score: number, result: CheckResult): number {

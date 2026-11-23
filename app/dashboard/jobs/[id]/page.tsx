@@ -112,6 +112,12 @@ export default async function JobPage({ params }: PageProps<"/dashboard/jobs/[id
             <dd className="text-right text-lavender">{rupees(b.verificationBufferPaise)}</dd>
             <dt className="text-mist">NightShift fee</dt>
             <dd className="text-right text-lavender">{rupees(b.nightshiftFeePaise)}</dd>
+            {b.minimumTopUpPaise ? (
+              <>
+                <dt className="pl-4 text-xs text-mist">of which top-up to the ₹10 minimum job price</dt>
+                <dd className="text-right text-xs text-mist">{rupees(b.minimumTopUpPaise)}</dd>
+              </>
+            ) : null}
             <dt className="border-t border-navy pt-2 font-semibold text-lavender">Price</dt>
             <dd className="border-t border-navy pt-2 text-right font-semibold text-lavender">{rupees(job.pricePaise)}</dd>
           </dl>

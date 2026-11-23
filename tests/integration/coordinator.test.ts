@@ -96,30 +96,36 @@ describe("job lifecycle: quote → confirm → agents run it → results", () =>
     expect(job.status).toBe("queued");
     expect(job.netChargedPaise).toBe(quoted.pricePaise);
 
-    // Agents pull work. Every task verifies against the published key.
+    // Agents pull work, one piece at a time each. Every task verifies against the published key.
     const seen = new Set<string>();
-    const leases = [];
-    for (const token of [a.token, b.token, a.token]) {
+    const take = async (token: string) => {
       const l = await lease(h, token);
       expect(l).not.toBeNull();
       const nodeId = token === a.token ? a.nodeId : b.nodeId;
       const task = verifySignedTask(l!.task, h.keys.publicKey, { nodeId, now: h.clock.now().getTime(), seenNonces: seen });
       expect(sha256Hex(Buffer.from(l!.input, "base64"))).toBe(task.inputSha256);
       expect(task.workload).toBe("text_embeddings");
-      leases.push({ l: l!, token });
-    }
-    expect(await lease(h, b.token)).toBeNull(); // all three pieces are out
+      return l!;
+    };
+    const finish = async (token: string, l: NonNullable<Awaited<ReturnType<typeof lease>>>) => {
+      const r = await complete(h, token, l);
+      expect(r.status).toBe(200);
+      expect((await body<{ accepted: boolean }>(r)).accepted).toBe(true);
+    };
+    const first = await take(a.token);
+    const second = await take(b.token);
+    // A PC holding a piece gets nothing more until it hands that one in.
+    expect(await lease(h, a.token)).toBeNull();
 
     const mid = (await body<{ job: JobJson }>(await H.getJobHandler(jsonReq("GET", `/api/jobs/${job.id}`), h.as(buyer), job.id))).job;
     expect(mid.status).toBe("running");
     expect(mid.progress).toEqual({ fragmentsDone: 0, fragmentsTotal: 3, nodesWorking: 2 });
 
     h.clock.advance(60);
-    for (const { l, token } of leases) {
-      const r = await complete(h, token, l);
-      expect(r.status).toBe(200);
-      expect((await body<{ accepted: boolean }>(r)).accepted).toBe(true);
-    }
+    await finish(a.token, first);
+    const third = await take(a.token);
+    await finish(b.token, second);
+    await finish(a.token, third);
 
     const done = (await body<{ job: JobJson }>(await H.getJobHandler(jsonReq("GET", `/api/jobs/${job.id}`), h.as(buyer), job.id))).job;
     expect(done.status).toBe("completed");

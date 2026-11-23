@@ -3,6 +3,7 @@ import Link from "next/link";
 import { rupees, shortId, when } from "@/components/dashboard/format";
 import { Card, Empty, PageTitle, Stat, TableWrap, Td, Th } from "@/components/dashboard/ui";
 import { listNodes } from "@/lib/coordinator/nodes";
+import { heldEarnings } from "@/lib/coordinator/verification";
 import { creditBalance, earningsByNode, ownerPieces } from "@/lib/dashboard";
 import { ownerEarnings } from "@/lib/ledger";
 import { formatStandardHours } from "@/lib/timebank";
@@ -12,12 +13,13 @@ export const metadata: Metadata = { title: "Earnings" };
 
 export default async function EarningsPage() {
   const { user, db, now } = await pageContext();
-  const [totals, perNode, pieces, nodes, credits] = await Promise.all([
+  const [totals, perNode, pieces, nodes, credits, held] = await Promise.all([
     ownerEarnings(db, user.id),
     earningsByNode(db, user.id),
     ownerPieces(db, user.id, 200),
     listNodes({ db, ownerId: user.id, now }),
     creditBalance(db, user.id),
+    heldEarnings(db, user.id),
   ]);
   const names = new Map(nodes.map((n) => [n.id, n.name]));
 
@@ -32,7 +34,11 @@ export default async function EarningsPage() {
         <Stat label="Pay for GPU time" value={rupees(totals.computePayPaise)} />
         <Stat label="Electricity paid back" value={rupees(totals.powerReimbursementPaise)} />
         <Stat label="Paid out" value={rupees(totals.paidOutPaise)} note="UPI payouts are simulated" />
-        <Stat label="Balance" value={rupees(totals.balancePaise)} />
+        <Stat
+          label="Balance"
+          value={rupees(totals.balancePaise)}
+          note={held > 0 ? `${rupees(held)} held until checks finish` : "Nothing held"}
+        />
       </div>
 
       <div className="mt-8 space-y-6">
