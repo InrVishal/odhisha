@@ -2,7 +2,9 @@ import { eq } from "drizzle-orm";
 import type { Metadata } from "next";
 import { when } from "@/components/dashboard/format";
 import { Card, PageTitle, secondaryButtonClass } from "@/components/dashboard/ui";
+import { isAdmin } from "@/lib/admin";
 import { users } from "@/lib/db/schema";
+import { getEnv } from "@/lib/env";
 import { logoutEverywhere } from "../actions";
 import { pageContext } from "../data";
 import { DeleteAccount } from "./delete-account";
@@ -29,7 +31,7 @@ export default async function AccountPage() {
             </div>
             <div>
               <dt className="text-mist">Account type</dt>
-              <dd className="text-lavender">{user.role === "admin" ? "Admin" : "Regular"}</dd>
+              <dd className="text-lavender">{(await isAdmin(db, user.id, getEnv().ADMIN_EMAILS)) ? "Admin" : "Regular"}</dd>
             </div>
           </dl>
         </Card>

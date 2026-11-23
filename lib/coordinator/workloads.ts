@@ -236,6 +236,17 @@ export function encodeFragmentInput(items: readonly InputItem[]): Buffer {
  * Estimated seconds for one fragment on a machine with this benchmark score.
  * Overhead is fixed; per-item time scales with the benchmark (RTX 3060 = 1000).
  */
+/**
+ * The Time-Bank unit: what a piece of work is worth in standard GPU-seconds,
+ * i.e. how long the reference GPU (RTX 3060, score 1000) takes for it. It
+ * depends only on the work (workload and item count), never on which PC ran
+ * it or how long that PC took, so a slow PC can't earn more for the same
+ * work and a CPU piece costs the same as a GPU piece of the same size.
+ */
+export function standardWorkSeconds(spec: WorkloadSpec, itemCount: number): number {
+  return estimateSeconds(spec, itemCount, BASELINE_BENCHMARK_SCORE);
+}
+
 export function estimateSeconds(spec: WorkloadSpec, itemCount: number, benchmark: number): number {
   const b = Math.max(1, benchmark);
   return spec.cost.overheadSec + Math.ceil((itemCount * spec.cost.perItemMsAtBaseline * BASELINE_BENCHMARK_SCORE) / b / 1000);

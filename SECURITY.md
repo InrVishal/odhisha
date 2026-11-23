@@ -12,7 +12,7 @@ To report a vulnerability, email the team rather than opening a public issue.
 | A01 | Every query for user data is scoped to the session user's id. Another user's job, results, node, token or earnings answer 404, exactly like a missing one | `lib/coordinator/jobs.ts` (`ownJob`), `lib/coordinator/nodes.ts` (`ownNode`), `lib/ledger.ts` | `api-security.test.ts` (IDOR per resource) |
 | A01 | Agents act only on their own leases: complete/fail checks node id, attempt number and lease expiry in one conditional UPDATE | `lib/coordinator/agent.ts` | `api-security.test.ts`, `coordinator.test.ts` (late result refused) |
 | A01 / CSRF | Cookie-authenticated API writes require our own `Origin` (SameSite=Lax is the first lock) | `assertSameOrigin` in `lib/api/handlers.ts` | `api-security.test.ts` |
-| A01 | Admin role lives only in the DB and is re-read on every admin call. No UI or API can change it. The admin panel is read-only, shows account ids only (no emails, no IP hashes), and answers 404 to everyone else | `lib/db/schema.ts` (`user.role`), `requireAdmin()`, `app/dashboard/admin/page.tsx`, `lib/admin.ts` | `tests/e2e/dashboard.spec.ts` (buyer gets 404, admin sees every section), `tests/integration/dashboard.test.ts` (no contact data in admin rows) |
+| A01 | Admin is two keys (database role **and** the `ADMIN_EMAILS` allowlist), read fresh on every request, plus a login from the last 15 minutes and a TOTP code. Checked in the `/admin` layout, the page, every admin server action and every admin API route; everyone else gets a 404. See [Admin](#admin) | `lib/admin.ts`, `lib/admin-access.ts`, `lib/auth/guards.ts`, `app/admin/*`, `lib/api/handlers.ts` (`requireAdminApi`) | `tests/integration/admin.test.ts`, `tests/e2e/dashboard.spec.ts`, `scripts/smoke.mjs` |
 | A01 | Dashboards render from the same session-scoped functions as the API, and every button calls the JSON API, so each action gets the API's session, CSRF, rate-limit and ownership checks. Every dashboard page checks the session itself, not only the layout | `app/dashboard/data.ts` (`pageContext`), `components/dashboard/api.ts` | `tests/e2e/dashboard.spec.ts` (signed out → login page on every page; signed-in flows on the preview) |
 | A01 | Framing blocked | `frame-ancestors 'none'`, `X-Frame-Options: DENY` | `tests/unit/headers.test.ts`, `scripts/check-headers.mjs` |
 | A02 Cryptographic failures | Node tokens: 256-bit random, stored as SHA-256 | `lib/security/tokens.ts`, `node_token.token_hash` | `tests/unit/tokens.test.ts`, `tests/integration/schema.test.ts` |
@@ -21,11 +21,11 @@ To report a vulnerability, email the team rather than opening a public issue.
 | A02 | HSTS (2 years, subdomains, preload) | `lib/security/headers.ts` | `headers.test.ts`, `check-headers.mjs` |
 | A02 | Job data encrypted at rest: AES-256-GCM with a random key per piece, wrapped with `DATA_ENCRYPTION_KEY`. Associated data binds each ciphertext to its job and key, so blobs and wrapped keys can't be swapped between rows | `lib/security/envelope.ts`, `lib/coordinator/store.ts` | `tests/unit/crypto.test.ts`, `coordinator.test.ts` (no plaintext in the DB) |
 | A02 | Separate signing and data keys per environment (Production, Preview, local). Required when deployed; dev/test use random per-process keys, never a key in the source | `lib/security/keys.ts`, `lib/env.ts` | `env.test.ts`, `crypto.test.ts` |
-| A03 Injection | All SQL through Drizzle (parameterized). `sql.raw` and string-built SQL are banned | `lib/db/client.ts`, `.semgrep.yml` (`no-raw-sql`, `no-string-built-sql`) | Semgrep in CI |
+| A03 Injection | All SQL through Drizzle (parameterized). `sql.raw`, string-built SQL, plain-string `execute`, and `sql.identifier` with anything but a literal are banned. No endpoint takes SQL, a filter or a sort field from the user | `lib/db/client.ts`, `tools/semgrep/nightshift.yaml` | `semgrep --test tools/semgrep` (each rule has must-match and must-not-match examples), then the scan, in CI |
 | A03 | Zod on every input boundary (strict objects: unknown keys refused), with size limits. Bodies are capped before and while reading (413). Validation errors name fields, never echo values | `lib/api/http.ts`, `lib/coordinator/*.ts` | `env.test.ts`, `workloads.test.ts`, `api-security.test.ts` |
 | A03 / uploads | Images are typed by magic bytes only (PNG, JPEG, WebP). Name and Content-Type are ignored. SVG, GIF, HTML, PDF and executables are refused. Size and count caps per item and per job. Stored under random keys, never as files; results always download with `Content-Disposition: attachment` and `nosniff` | `lib/security/filetype.ts`, `lib/api/handlers.ts` | `workloads.test.ts`, `api-security.test.ts` |
-| A03 / XSS | Strict CSP with per-request nonces and `strict-dynamic`. No `unsafe-inline`, no `unsafe-eval` in production. `dangerouslySetInnerHTML` and `eval` banned | `proxy.ts`, `lib/security/headers.ts`, `.semgrep.yml` | `headers.test.ts`, `check-headers.mjs`, Semgrep |
-| A04 Insecure design | Ledgers and audit log are append-only, enforced by DB triggers. Balances are sums, never stored | `drizzle/0001_append_only.sql` | `schema.test.ts` (UPDATE/DELETE/TRUNCATE rejected) |
+| A03 / XSS | Strict CSP with per-request nonces and `strict-dynamic`. No `unsafe-inline`, no `unsafe-eval` in production. `dangerouslySetInnerHTML` and `eval` banned | `proxy.ts`, `lib/security/headers.ts`, `tools/semgrep/nightshift.yaml` | `headers.test.ts`, `check-headers.mjs`, Semgrep |
+| A04 Insecure design | Ledgers and audit log are append-only: the app's database role has no UPDATE, DELETE or TRUNCATE on them, and a trigger stops every other role too. Balances are sums, never stored | `drizzle/0001_append_only.sql`, `drizzle/0008_phase8_security.sql` | `schema.test.ts` (refused as app_runtime and as the owner), `db-roles.test.ts` |
 | A04 | Idempotency keys on every ledger row | `*_ledger.idempotency_key` unique | `schema.test.ts` |
 | A04 | Agents never run buyer code. Three whitelisted workloads; buyers send data and enum/number parameters only, never scripts, model names outside the enum, or URLs. Agent output is validated against the workload's schema | `lib/coordinator/workloads.ts` | `workloads.test.ts`, `api-security.test.ts` |
 | A04 | Digest-pinned container images per workload: the coordinator signs `image` into each task, and the agent refuses anything that isn't exactly the digest in its own whitelist. The two lists are kept identical by a test | `lib/coordinator/workloads.ts`, `agent/src/nightshift_agent/trust.py`, `.github/workflows/images.yml` | `tests/unit/agent-pins.test.ts`, `agent/tests/test_trust.py` (wrong digest, tag, other registry) |
@@ -69,6 +69,110 @@ To report a vulnerability, email the team rather than opening a public issue.
 | A09 | Sentry with PII scrubbing | – | ⏳ phase 8 |
 | A10 SSRF | No server-side fetching of user-supplied URLs. Job inputs are uploaded data, never URLs; workload parameters reject unknown keys such as `url`. The only outbound call is to a fixed Resend URL | `lib/auth/email.ts`, `lib/coordinator/workloads.ts` | `workloads.test.ts`; code review; Semgrep |
 
+## Admin
+
+Admin can't be gained through the app, and `/admin` is nothing to anyone else.
+
+- **Two keys.** An account is an admin only if `user.role = 'admin'` in the database **and** its email is on `ADMIN_EMAILS` (a server-only env var). Either one alone does nothing. Both are read from the database and the environment on every request (`lib/admin.ts`, `isAdmin`), never from the session, a cookie or a header: the session carries the user id only.
+- **Nothing in the app writes `role`.** No route, server action or form takes it (every input schema is strict, so `role`, `isAdmin`, `trust` or `ownerId` in a body is a 400), Semgrep bans `role`/`isAdmin` in any `.set()`/`.values()`, and a test scans the source for it.
+- **The database stops it too** (migration 0008). The app's role `app_runtime` has no UPDATE privilege on `user.role`. A trigger (`user_role_guard`) undoes a change to `role` by any role that isn't the table owner (or a member of it), on INSERT and UPDATE, and writes every attempt, allowed or refused, to the audit log (`admin.role_changed`, `admin.role_change_refused`). The refusal undoes the change instead of raising an error, so that the audit row isn't rolled back with it. The scheduler emails every role change and every refused attempt to the admins (`lib/alerts.ts`).
+- **Stronger sign-in for admin.** Admin pages and actions need a login from the last 15 minutes (`session.created_at`) **and** a code from an authenticator app (TOTP, RFC 6238) entered on that session (`session.mfa_at`). The first time, the admin sets one up on `/admin` (the secret is sealed with `DATA_ENCRYPTION_KEY`); once confirmed, the app can't switch it off or replace it (no privilege, plus a trigger), and setting it up emails the admins. A code works once. Five tries per 15 minutes. Sessions that existed before migration 0008 count as old logins.
+- **Checked everywhere, trusted nowhere.** The `/admin` layout, the page, every admin server action (`app/admin/actions.ts`) and every admin API route (`requireAdminApi`) check for themselves. `proxy.ts` plays no part; no header is trusted (`x-middleware-subrequest`, made-up role headers: Semgrep bans reading them). Non-admins get the same 404 as a page that doesn't exist, for every method on the admin API too. An admin without the step-up gets a 403 asking for it.
+- **Audited.** Every admin page view (`admin.viewed`), authenticator setup, code and failed code, and every action (`node.released`, actor type `admin`).
+- **Reads as `readonly`.** The admin panel's reports use the `readonly` database role when `DATABASE_URL_READONLY` is set: no emails, sessions, tokens or job data.
+
+**Making someone an admin** (owner only, in the Neon SQL editor, as the owner role): `update "user" set role = 'admin' where email = '<their email>';`, then add the email to `ADMIN_EMAILS` in Vercel and redeploy. They set up their authenticator on their first visit to `/admin`. **Resetting an authenticator:** `delete from admin_totp where user_id = '<id>';` (owner role only), then log that account out of all devices.
+
+## Database roles
+
+| Role | Used by | Can | Can't |
+| --- | --- | --- | --- |
+| `app_runtime` | the web app (Vercel `DATABASE_URL`) | SELECT/INSERT on the tables it needs; UPDATE on named columns only; DELETE only on sessions, logins, used email links and job data | change the schema, create temp tables or functions, UPDATE/DELETE/TRUNCATE ledgers or the audit log, UPDATE `role`, `owner_id` or `buyer_id`, delete accounts, read the migration history, grant anything |
+| `readonly` | admin reports (`DATABASE_URL_READONLY`) | SELECT on PCs, jobs, the three ledgers, the audit log, canary covers, and `user` (id, role, dates) | read emails, sessions, tokens, job data or TOTP secrets; write anything |
+| migrator: the schema owner (Neon: `neondb_owner`) | the deploy step only (`PROD_DATABASE_URL_UNPOOLED`, GitHub "production" environment) | migrations; setting roles | — |
+
+The exact privileges are tested table by table and column by column (`tests/integration/db-roles.test.ts`): a new table without a decision there fails CI. The whole integration suite runs as `app_runtime`, which proves the grants are enough. Every preview deployment runs as `app_runtime` with admin reports as `readonly`, on a copy of production (`scripts/preview-db-roles.mjs`, `tests/live/db-exposure.ts`).
+
+The migrator is Neon's owner role rather than a third, new role: tables are owned by `neondb_owner`, and handing them to a new role isn't something a migration can do safely on Neon. What matters is where its password lives: only in GitHub's "production" environment, used by the migrate step. Once production uses `app_runtime`, Vercel never has it.
+
+**TLS.** Deployed environments refuse a database URL without a verified TLS connection (`lib/env.ts`): Neon hosts are reached over `wss://` (Node checks the certificate), any other host needs `sslmode=verify-full`. The preview check also proves Neon refuses a plain connection.
+
+**No other way in.** No endpoint runs user-supplied SQL or filters. The preview check fails if the Neon Data API (PostgREST roles), GraphQL (`pg_graphql`) or outbound extensions (dblink, http, postgres_fdw) exist on the database.
+
+**Switching production to `app_runtime`** (one time, after this phase's migration has run in production):
+1. Make a password: `openssl rand -hex 24`.
+2. In the Neon SQL editor (production branch, owner role): `alter role app_runtime with login password '<password>';` and the same for `readonly` with a second password.
+3. In Vercel → Settings → Environment Variables (Production): set `DATABASE_URL` to the pooled connection string with user `app_runtime` and that password (copy the owner's pooled string and swap the user and password), and `DATABASE_URL_READONLY` the same way for `readonly`. Mark both **Sensitive**. Redeploy.
+4. Check: `/api/health` says ok, and in Neon `select distinct usename from pg_stat_activity;` shows `app_runtime`.
+
+**Rotating a database password** (any role, any time, no downtime for `app_runtime`/`readonly`): set a new one with `alter role <role> with password '<new>';`, update the env var in Vercel (or the GitHub secret for the owner), redeploy. Old connections end when their pool closes them. For the owner role, use Neon's "Reset password" and update `PROD_DATABASE_URL_UNPOOLED` in GitHub.
+
+## Environment variables
+
+Nothing below is ever `NEXT_PUBLIC_`: env validation refuses secret-looking public names (`lib/env.ts`), Semgrep bans them, and CI scans every file a browser can download for secret values and patterns (`scripts/scan-bundle.mjs`).
+
+| Variable | Where it's used | Server only | Secret | How to rotate |
+| --- | --- | --- | --- | --- |
+| `DATABASE_URL` | app's database connection (as `app_runtime`) | yes | yes | see "Rotating a database password" |
+| `DATABASE_URL_READONLY` | admin reports (as `readonly`), optional | yes | yes | same |
+| `DATABASE_URL_UNPOOLED` | migrations (`scripts/migrate.ts`), local only | yes | yes | same |
+| `AUTH_SECRET` | Auth.js, and the key for IP and device hashes | yes | yes | new random 32+ chars in Vercel, redeploy. Logs everyone out (their sessions are DB rows, still valid; audit IP hashes change) |
+| `AUTH_URL` | Auth.js base URL, optional | yes | no | — |
+| `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` | Google login | yes | secret: yes | Google Cloud Console → new client secret → Vercel → redeploy → delete the old one |
+| `AUTH_GOOGLE_REDIRECT_ORIGINS` | where Google login is offered | yes | no | — |
+| `EMAIL_TRANSPORT`, `EMAIL_FROM` | magic links and alerts | yes | no | — |
+| `AUTH_RESEND_KEY` | Resend (magic links, security alerts) | yes | yes | Resend → new API key → Vercel → redeploy → revoke the old one |
+| `RATE_LIMIT_BACKEND` | rate limiter | yes | no | — |
+| `UPSTASH_REDIS_REST_URL` / `_TOKEN`, or `KV_REST_API_URL` / `KV_REST_API_TOKEN` | rate limits (Upstash via the Vercel integration) | yes | token: yes | Upstash → reset the token → it syncs to Vercel → redeploy |
+| `KV_URL`, `REDIS_URL`, `KV_REST_API_READ_ONLY_TOKEN` | set by the Upstash integration, not used by the app | yes | yes | as above |
+| `CRON_SECRET` | `/api/cron/tick` | yes | yes | new random 32+ chars in Vercel (Vercel Cron reads it), redeploy |
+| `COORDINATOR_SIGNING_KEY` | signs agent tasks (Ed25519) | yes | yes | new key, Vercel, redeploy; agents pick up the new public key from `/api/agent/signing-key` (the kid changes) |
+| `DATA_ENCRYPTION_KEY` | wraps per-piece job keys; seals TOTP secrets | yes | yes | not rotated in place yet: changing it makes stored job data (≤ 7 days) and admin authenticators unreadable. Rotate after a quiet week, then reset admin authenticators |
+| `ADMIN_EMAILS` | second admin key | yes | personal data | edit in Vercel, redeploy |
+| `ADMIN_ALERT_EMAIL` | where security alerts go (default: `ADMIN_EMAILS`; previews: none) | yes | personal data | — |
+| `SYBIL_CHECKER_RULES` | `enforce` (production must) or `report` (previews) | yes | no | — |
+| `CONTACT_EMAIL`, `SITE_URL`, `DEMO_MODE`, `APP_ENV` | privacy page, metadata, demo banner, environment | yes | no | — |
+| `SENTRY_DSN` | reserved; the Sentry SDK isn't installed yet | yes | no | — |
+
+**CI and deploy secrets** (GitHub Actions; masked in logs by GitHub, and the preview's generated database passwords are masked with `::add-mask::`):
+
+| Secret | Used by | How to rotate |
+| --- | --- | --- |
+| `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` | preview and production deploys | Vercel → Account → Tokens → new token → GitHub secret → delete the old one |
+| `VERCEL_AUTOMATION_BYPASS_SECRET` | E2E, ZAP and Lighthouse on protected previews | Vercel → Deployment Protection → regenerate → GitHub secret |
+| `NEON_API_KEY`, `NEON_PROJECT_ID` | creating and deleting preview branches | Neon → Account → API keys → new key → GitHub secret → revoke the old one |
+| `PROD_DATABASE_URL_UNPOOLED` ("production" environment) | the migrate step only | Neon → reset the owner password → update the secret |
+| `PROD_BASE_URL` ("production" environment) | production smoke test and Lighthouse | — |
+
+## Secrets in CI (GitHub Actions)
+
+- No `pull_request_target` and no `workflow_run`: a fork's code never runs with this repo's secrets. Jobs that need secrets (preview and everything after it, preview cleanup) skip fork PRs.
+- Every job states its own permissions; the workflow default is none. Only the image build can write packages; only CodeQL can write security events.
+- Checkouts don't keep the GitHub token (`persist-credentials: false`). Every action is pinned by commit SHA; every downloaded tool (gitleaks, Trivy, k6) is checked against its release checksums.
+- Workflow expressions are passed to scripts through `env:`, never written into the script. `zizmor` audits the workflows on every run.
+
+## Lockdown checks (Phase 8)
+
+| Check | How | Proven by |
+| --- | --- | --- |
+| A1 No input can set `role`, `isAdmin`, `trust` or `ownerId` | strict schemas everywhere; no role writes in code | `mass-assignment.test.ts` (every JSON endpoint, with `__proto__` too; bodiless routes ignore bodies; source scan), Semgrep `no-role-writes` |
+| A2 The database blocks role changes | no column privilege + `user_role_guard` trigger; every attempt audited and emailed | `admin.test.ts` ("A2"), `db-roles.test.ts` |
+| A3 Two-key admin | `isAdmin` needs role and `ADMIN_EMAILS` | `admin.test.ts` ("A3 + A4"), `env.test.ts` |
+| A4 Role read fresh from the database | no role in the session or its types | `admin.test.ts` (role removed → next request is a 404) |
+| A5 Fresh login + TOTP for admin, audited, alerts | `lib/admin-access.ts`, `lib/security/totp.ts`, `lib/alerts.ts` | `totp.test.ts` (RFC 6238 vectors), `admin.test.ts` ("A5"), `dashboard.spec.ts` (admin sets up an authenticator in a real browser) |
+| B `/admin` gives non-admins nothing | layout + page + action + API checks, 404 | `admin.test.ts` ("B"), `dashboard.spec.ts` (buyer and owner: pages, every admin API method, admin server actions called by ID, spoofed headers), `smoke.mjs` (anonymous, spoofed headers, every method) |
+| C No SQL from users; Semgrep bans raw/string SQL | `tools/semgrep/nightshift.yaml` | `semgrep --test tools/semgrep`, then the scan |
+| C No Data API / GraphQL / REST into the database | preview check on a copy of production | `tests/live/db-exposure.ts` |
+| C Three roles, least privilege | migration 0008 | `db-roles.test.ts`; whole integration suite as `app_runtime`; previews run as `app_runtime` (live test checks `pg_stat_activity`) |
+| C TLS with certificate verification | env validation; `wss://`; `verify-full` | `env.test.ts`, `db-exposure.ts` (TLS connection; plain refused) |
+| C IDOR on every resource | session-scoped queries | `api-security.test.ts` (jobs, results, invoices, PCs, tokens, earnings, Time-Bank, export, UPI, credits, agent leases) |
+| D1 No secrets in the browser bundle | `scripts/scan-bundle.mjs` (env values, patterns, server-only names, maps) | `scan-bundle.test.ts`; CI on the build, the preview (with `vercel pull` values) and production |
+| D2 No public source maps | `productionBrowserSourceMaps: false` | `scan-bundle.mjs`, `smoke.mjs` (every script's `.map` is a 404) |
+| D3 Error pages and health reveal nothing | generic error page; `{"status":"ok"}` only | `smoke.mjs` (no env names, versions or stack traces) |
+| D4 No exposed files | nothing outside `public/` is served | `smoke.mjs` (`/.env`, `/.env.local`, `/.git/config`, `/next.config.js`, `/package.json` and more → 404), on the build, every preview and production |
+| D5 GitHub Actions | see "Secrets in CI" | `zizmor` in CI |
+| D6 Every env var documented | this section | review |
+
 ## Data protection (India DPDP Act)
 
 - **Minimisation**: we never store a name, profile picture or OAuth tokens (`lib/auth/adapter.ts`, proven in `schema.test.ts`). Google is asked for `openid email` only. IPs are stored only as a keyed hash.
@@ -80,11 +184,11 @@ To report a vulnerability, email the team rather than opening a public issue.
 
 - **Checks are sampled.** Only about 1 piece in 10 is re-run, so a PC that cheats once can get away with it; one that cheats often loses trust fast (two failed checks take a new PC into quarantine).
 - **Fake accounts are flagged, not stopped.** We don't verify identity. One UPI ID per account is enforced, and shared devices and networks are flagged and kept from checking each other, but a person with several phones, SIMs and UPI IDs can still run several accounts. Device IDs come from the agent, which anyone can modify, so they can be faked; networks are shared by hostels and mobile carriers, so they can't be a hard rule for anything but checks.
-- **Small networks get fewer checks done.** Because a check never goes to a PC on the same account, device or network, a demo with all PCs on one Wi-Fi never runs its checks: those pieces' pay stays held and their credits stay pending, and at the 7-day purge the credits are clawed back. This is the safe side to fail on.
+- **Small networks are checked by canaries only.** A check never goes to a PC on the same account, device or network, so in a college lab or a one-person demo no independent check can run. Those pieces go canary-only: their pay is held until the PC passes a canary issued after them (30% of its leases are canaries meanwhile), with no trust gain. That proves the PC was honest on the canary, not on each piece: a PC that cheats only on real pieces and answers canaries honestly is caught only if it can't tell them apart. Where no verified real piece exists yet (a brand-new lab), the canaries are the made-up challenges, which can be recognised (see below).
 - **The made-up fallback challenges can be recognised** by someone who reads this code (the templates are public), and in a network of small jobs their size (250 sentences) stands out: the classifier test spots them every time. They're only sent while no verified real piece is available; after that, canaries are re-runs of real pieces, which the same classifier can't tell apart from real work.
 - **Known-answer canaries send a buyer's piece to one more PC**, only while the job's data exists (7 days). The privacy page says so.
 - **The speed scale is anchored on an estimate** (`REFERENCE_CHALLENGE_ITEMS_PER_SEC`), not a measured RTX 3060. Scores compare PCs fairly with each other; the absolute number isn't calibrated yet (docs/CALIBRATION.md). Speed is used for planning and matching only; Time-Bank weighting is frozen at 1.0×.
-- **Frozen weighting has a known gap:** one verified hour on a slow PC earns as much as one on a fast PC, and a CPU-class PC's pieces are priced at more GPU-seconds than the same work on a GPU. Someone could earn credits on slow hardware and spend them on fast. It's capped by what the network asks a PC to do (credits only for pieces of real jobs, at the coordinator's estimate, not the PC's run time), and it's why weighting must come back once scores are calibrated.
+- **Credits count work, not time** (since Phase 8): a piece earns what the reference RTX 3060 would take for it, and a job costs the same unit, so the slow-earn, fast-spend gap is closed. What's left: the per-item costs are estimates until calibrated on a real RTX 3060 (docs/CALIBRATION.md), so one workload may be slightly over- or under-valued against another.
 - **Resized images are compared by type, dimensions and file size, not pixels.** The coordinator doesn't decode images. A PC that returns a blank image of the right size and roughly the right file size would pass.
 - **Checks happen after the job finishes**, so a buyer may already have downloaded a piece that is later corrected. The job page says so and the corrected result is downloadable.
 
@@ -92,6 +196,9 @@ To report a vulnerability, email the team rather than opening a public issue.
 - **The in-memory rate limiter** (dev only) is per process. Deployed environments must use Upstash, and env validation enforces it.
 - **Client IP for rate limits** comes from `x-real-ip` / `x-forwarded-for`. On Vercel these are set by the platform. Anywhere else, a client can spoof them.
 - **Sessions on other devices** stay valid after a new login, until they expire (7 days). "Log out of all devices" on the dashboard ends them all at once.
+- **Account takeover is the realistic way in.** An attacker with the admin's email inbox can log in by magic link, and the first time also set up the authenticator (the setup emails the admins). Turn on 2FA on the email account and on GitHub, Vercel, Neon, Google, Resend and Upstash: whoever controls those controls the app. Passkeys aren't offered yet; TOTP is.
+- **Production runs as the owner database role until it's switched** (see "Switching production to app_runtime"): the roles, grants and triggers are in production from this phase's migration, but `DATABASE_URL` in Vercel is the owner's until the owner sets the new login. The role trigger protects `role` either way.
+- **No Sentry yet.** The SDK isn't installed, so there are no source maps to upload: none are built for the browser at all.
 - **Google login is not available on Vercel preview URLs.** Google needs every redirect URI registered exactly, with no wildcards, and each preview gets a new URL. Google is offered only on origins listed in `AUTH_GOOGLE_REDIRECT_ORIGINS` (localhost and production), and previews use the email link. This is expected, not a bug. Don't set Google credentials in the Vercel Preview environment.
 - **Auth.js v5 is still beta** (`next-auth@5.0.0-beta.32`, pinned exactly). It's the only Auth.js line for the App Router. Dependabot will offer upgrades, and each one has to pass the auth tests.
 - **Magic links on previews need Resend with a verified domain.** Without one, Resend only delivers to the account owner's own address.

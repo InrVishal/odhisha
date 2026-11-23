@@ -7,6 +7,9 @@ const nextConfig: NextConfig = {
   // they stay off. See node_modules/next/dist/docs/01-app/02-guides/content-security-policy.md
   cacheComponents: false,
   poweredByHeader: false,
+  // No public browser source maps (scripts/scan-bundle.mjs fails the build if
+  // any .map file or sourceMappingURL comment is served).
+  productionBrowserSourceMaps: false,
   reactStrictMode: true,
   // PGlite ships WASM; keep it out of the server bundle (dev/test only).
   serverExternalPackages: ["@electric-sql/pglite"],

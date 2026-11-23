@@ -44,13 +44,17 @@ export async function createDb(url: string): Promise<DbHandle> {
     const { Pool, neonConfig } = await import("@neondatabase/serverless");
     const { drizzle } = await import("drizzle-orm/neon-serverless");
     if (typeof WebSocket !== "undefined") neonConfig.webSocketConstructor = WebSocket;
+    // Secure WebSockets only: TLS with the certificate checked by Node, never unencrypted.
+    neonConfig.useSecureWebSocket = true;
     const pool = new Pool({ connectionString: url });
     return { db: drizzle(pool, { schema }) as unknown as Db, driver: "neon", close: () => pool.end() };
   }
 
   const { Pool } = await import("pg");
   const { drizzle } = await import("drizzle-orm/node-postgres");
-  const pool = new Pool({ connectionString: url, max: 10 });
+  // sslmode=verify-full: the server's certificate and host name are checked.
+  const verifyFull = new URL(url).searchParams.get("sslmode") === "verify-full";
+  const pool = new Pool({ connectionString: url, max: 10, ...(verifyFull ? { ssl: { rejectUnauthorized: true } } : {}) });
   return { db: drizzle(pool, { schema }) as unknown as Db, driver: "pg", close: () => pool.end() };
 }
 

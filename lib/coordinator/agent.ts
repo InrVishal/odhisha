@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import { aliasedTable, and, asc, desc, eq, gt, gte, inArray, isNull, lt, ne, notExists, or, sql } from "drizzle-orm";
 import { audit } from "@/lib/audit";
 import { z } from "zod";
@@ -16,6 +17,7 @@ import { queueCheckIfPicked, resolveCheck, applyCheck } from "./verification";
 import { wantsChallenge } from "./challenge";
 import { createChallenge, lastChallengeAt, settleChallenge, type StoredChallenge } from "./challenge-db";
 import { createKnownAnswerCanary } from "./canary";
+import { CANARY_ONLY_RATE, owesCanary, settleCovers } from "./canary-only";
 import { deviceHash, mayCheck, pieceOrigins, recordOrigin, subnetHash, type SybilMode } from "./sybil";
 import { checkRate } from "./verify";
 import { clampWatts } from "./classes";
@@ -31,7 +33,7 @@ import {
   type Unavailable,
 } from "./schedule";
 import { fragmentDataKey, getBlob, putBlob } from "./store";
-import { estimateSeconds, parseOutput, WORKLOADS } from "./workloads";
+import { estimateSeconds, parseOutput, standardWorkSeconds, WORKLOADS } from "./workloads";
 
 /**
  * The agent API. Agents authenticate with their node token (Bearer), only
@@ -144,6 +146,8 @@ export interface LeaseOptions {
   /** Where the request came from, for the network rule. */
   ip?: string;
   ipSecret?: string;
+  /** Random number in [0, 1) for the canary-only rate. Tests pass a fixed one. */
+  coverRand?: () => number;
 }
 
 export async function leaseFragment(
@@ -173,10 +177,18 @@ export async function leaseFragment(
     .limit(1);
   if (holding.length) return { lease: null, reason: "busy" };
 
-  if (opts.challenges && wantsChallenge({ measured: fresh!.benchmarkScore !== null, lastChallengeAt: await lastChallengeAt(db, node.id), now, rand: opts.rand })) {
-    // A re-run of a verified real piece if there is one; a made-up challenge otherwise.
+  // A re-run of a verified real piece if there is one; a made-up challenge otherwise.
+  const sendCanary = async () => {
     const { fragment, job } = (await createKnownAnswerCanary(db, fresh!, now, mode)) ?? (await createChallenge(db, fresh!, now, keys.dataKey, opts.rand));
     return { lease: await signLease(db, node, fragment, job, keys, now), reason: null };
+  };
+  // Canary-only verification (canary-only.ts): while this PC has pieces no
+  // independent PC could check, 30% of its leases are canaries.
+  const owed = opts.challenges ? await owesCanary(db, node.id) : false;
+  const coverRand = opts.coverRand ?? (() => randomInt(1_000_000_000) / 1_000_000_000);
+  if (opts.challenges) {
+    if (wantsChallenge({ measured: fresh!.benchmarkScore !== null, lastChallengeAt: await lastChallengeAt(db, node.id), now, rand: opts.rand })) return sendCanary();
+    if (owed && coverRand() < CANARY_ONLY_RATE) return sendCanary();
   }
 
   const sibling = aliasedTable(fragments, "sibling");
@@ -245,6 +257,8 @@ export async function leaseFragment(
     await db.update(jobs).set({ status: "running" }).where(and(eq(jobs.id, j.id), eq(jobs.status, "queued")));
     return { lease: await signLease(db, node, taken, j, keys, now), reason: null };
   }
+  // Nothing else to do and pay is waiting on a canary: send one now.
+  if (owed) return sendCanary();
   return { lease: null, reason: "no_work" };
 }
 
@@ -366,6 +380,8 @@ export async function completeFragment(
     if (seen) {
       await failFragment(db, node, { fragmentId: f.id, attempt: args.attempt, now: args.now, ipSecret: args.ipSecret });
       await applyCheck(db, node.id, "fail", args.now, args.ipSecret);
+      // Caught cheating: pieces of this PC waiting on a canary (canary-only) fail with it.
+      await settleCovers(db, { nodeId: node.id, canaryFragmentId: f.id, passed: false, issuedAt: f.startedAt ?? args.now, now: args.now, ipSecret: args.ipSecret });
       await audit(db, { actorId: null, actorType: "system", action: "node.replay_rejected", targetType: "node", targetId: node.id, meta: { fragmentId: f.id } }, args.ipSecret);
       throw new CoordinatorError(422, "replayed_output", "This output belongs to a different piece.");
     }
@@ -394,6 +410,7 @@ export async function completeFragment(
       if (!done) throw new CoordinatorError(409, "lease_lost", "This lease is no longer yours. Drop the result.");
       await tx.update(jobs).set({ status: "completed", completedAt: args.now }).where(eq(jobs.id, j.id));
       const result = await settleChallenge(tx, node, { spec: j.challenge as StoredChallenge, output: args.body, startedAt: f.startedAt ?? args.now, now: args.now, ipSecret: args.ipSecret });
+      await settleCovers(tx, { nodeId: node.id, canaryFragmentId: f.id, passed: result.passed, issuedAt: f.startedAt ?? args.now, now: args.now, ipSecret: args.ipSecret });
       if (!result.passed) return { accepted: true, paidPaise: 0 };
       const memo = "speed and accuracy check";
       await bookOwner(tx, { ownerId: node.ownerId, nodeId: node.id, jobId: j.id, fragmentId: f.id, entryType: "power_reimbursement", amountPaise: pay.electricityPaise, idempotencyKey: ledgerKeys.power(f.id), memo: `Electricity for ${memo}` });
@@ -445,8 +462,10 @@ export async function completeFragment(
     // Time-Bank: a buyer's piece earns credits instead of compute pay
     // (pending until verified). Checks and lost races are paid in rupees.
     const credits = accepted && f.kind !== "verification" && payNode.earnsCredits;
+    // Per unit of verified work (the piece's standard GPU-seconds), not per second this PC took.
+    const creditUnits = standardWorkSeconds(WORKLOADS[j.workloadType], f.itemCount);
     if (credits) {
-      await earnCredits(tx, { userId: node.ownerId, nodeId: node.id, jobId: j.id, fragmentId: f.id, gpuSeconds: f.estGpuSeconds, now: args.now, memo: `Earned for ${memo}` });
+      await earnCredits(tx, { userId: node.ownerId, nodeId: node.id, jobId: j.id, fragmentId: f.id, gpuSeconds: creditUnits, now: args.now, memo: `Earned for ${memo}` });
     }
     await bookOwner(tx, {
       ownerId: node.ownerId,
@@ -471,7 +490,7 @@ export async function completeFragment(
       });
     }
     if (accepted && f.kind !== "verification") await completeJobIfDone(tx, j.id, args.now, args.ipSecret);
-    return { accepted, paidPaise: pay.electricityPaise + (credits ? 0 : pay.ownerPayPaise), ...(credits ? { creditSeconds: f.estGpuSeconds } : {}) };
+    return { accepted, paidPaise: pay.electricityPaise + (credits ? 0 : pay.ownerPayPaise), ...(credits ? { creditSeconds: creditUnits } : {}) };
   });
 }
 

@@ -54,5 +54,12 @@ export const promises: Promise_[] = [
   { text: "One payout UPI ID per account; shared devices and networks flagged and kept from checking each other", phase: 7, done: true, proof: "tests/integration/attacks.test.ts, tests/live/agent-preview.ts (flags raised)" },
 
   // Phase 8
-  { text: "Sentry error reports with personal details removed", phase: 8, done: false },
+  { text: "Admin needs the database role and the ADMIN_EMAILS allowlist, a login from the last 15 minutes and an authenticator code; anyone else gets a 404", phase: 8, done: true, proof: "tests/integration/admin.test.ts, tests/e2e/dashboard.spec.ts, scripts/smoke.mjs" },
+  { text: "The app runs as a least-privilege database role that can't change roles, the schema or the ledgers", phase: 8, done: true, proof: "tests/integration/db-roles.test.ts, tests/live/db-exposure.ts" },
+  { text: "No secrets or source maps in anything a browser downloads; no exposed config files", phase: 8, done: true, proof: "scripts/scan-bundle.mjs, scripts/smoke.mjs" },
+  { text: "Canary-only verification where no independent PC exists (pay held until a canary passes, no trust gain)", phase: 8, done: true, proof: "tests/integration/canary-only.test.ts" },
+  { text: "Time-Bank credits earned per verified unit of work, not per second", phase: 8, done: true, proof: "tests/integration/timebank.test.ts" },
+  { text: "Buyers can opt out of their pieces being reused as known-answer canaries", phase: 8, done: true, proof: "tests/integration/canary-only.test.ts" },
+  { text: "p95 under 300 ms at 200 virtual users on quote, lease, heartbeat and hand-in", phase: 8, done: true, proof: "tools/load/k6-load.js (CI job 9)" },
+  { text: "Sentry error reports with personal details removed", phase: 9, done: false },
 ];

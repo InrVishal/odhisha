@@ -34,6 +34,34 @@ function isEd25519PrivateKey(v: string): boolean {
   }
 }
 
+/**
+ * The database connection must be encrypted with the server's certificate
+ * checked. Neon hosts are reached over WebSockets (wss://, the certificate is
+ * verified by Node's TLS). Any other host needs sslmode=verify-full.
+ */
+export function dbTransportIsVerified(url: string): boolean {
+  if (url.startsWith("pglite:")) return false;
+  try {
+    const u = new URL(url);
+    if (u.hostname.endsWith(".neon.tech")) return u.searchParams.get("sslmode") !== "disable";
+    return u.searchParams.get("sslmode") === "verify-full";
+  } catch {
+    return false;
+  }
+}
+
+const emailList = z
+  .string()
+  .default("")
+  .transform((v, ctx) => {
+    const out: string[] = [];
+    for (const raw of v.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)) {
+      if (!z.email().safeParse(raw).success) ctx.addIssue({ code: "custom", message: "has an entry that isn't an email address" });
+      else out.push(raw);
+    }
+    return out;
+  });
+
 const optionalNonEmpty = z
   .string()
   .trim()
@@ -53,6 +81,26 @@ export const envSchema = z
         (v) => v.startsWith("postgres://") || v.startsWith("postgresql://") || v.startsWith("pglite:"),
         "must be a postgres:// URL or pglite:<dir>",
       ),
+
+    /**
+     * Optional second connection, as the "readonly" database role, for the
+     * admin reports. Unset: they use DATABASE_URL.
+     */
+    DATABASE_URL_READONLY: z
+      .string()
+      .trim()
+      .transform((v) => (v === "" ? undefined : v))
+      .optional()
+      .pipe(z.string().refine((v) => v.startsWith("postgres://") || v.startsWith("postgresql://"), "must be a postgres:// URL").optional()),
+
+    /**
+     * Admin is two keys: role = 'admin' in the database AND the account's
+     * email on this comma-separated list. Either one alone does nothing.
+     * Server-only, never NEXT_PUBLIC_. Empty: nobody is an admin.
+     */
+    ADMIN_EMAILS: emailList,
+    /** Where security alerts go (role changes, second-factor setup). Unset: every address on ADMIN_EMAILS. */
+    ADMIN_ALERT_EMAIL: emailList,
 
     // Auth.js
     AUTH_SECRET: z.string().min(32, "must be at least 32 characters"),
@@ -161,6 +209,11 @@ export const envSchema = z
     if (deployed) {
       if (e.DATABASE_URL.startsWith("pglite:")) {
         ctx.addIssue({ code: "custom", path: ["DATABASE_URL"], message: "pglite is for local dev/test only" });
+      } else if (!dbTransportIsVerified(e.DATABASE_URL)) {
+        ctx.addIssue({ code: "custom", path: ["DATABASE_URL"], message: "must use TLS with the certificate verified (a Neon host, or sslmode=verify-full)" });
+      }
+      if (e.DATABASE_URL_READONLY && !dbTransportIsVerified(e.DATABASE_URL_READONLY)) {
+        ctx.addIssue({ code: "custom", path: ["DATABASE_URL_READONLY"], message: "must use TLS with the certificate verified (a Neon host, or sslmode=verify-full)" });
       }
       if (e.EMAIL_TRANSPORT !== "resend") {
         ctx.addIssue({ code: "custom", path: ["EMAIL_TRANSPORT"], message: "must be 'resend' in preview/production" });
@@ -180,7 +233,7 @@ export const envSchema = z
 export type Env = z.infer<typeof envSchema>;
 
 /** Secret-looking names that must never be shipped to the browser. */
-const SECRET_NAME = /(SECRET|TOKEN|PASSWORD|PRIVATE|_KEY$|^KEY_|DSN|DATABASE)/i;
+const SECRET_NAME = /(SECRET|TOKEN|PASSWORD|PRIVATE|_KEY$|^KEY_|DSN|DATABASE|ADMIN)/i;
 
 export function findLeakedPublicSecrets(source: Record<string, string | undefined>): string[] {
   return Object.keys(source).filter((k) => k.startsWith("NEXT_PUBLIC_") && SECRET_NAME.test(k));

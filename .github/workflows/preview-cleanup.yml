@@ -7,7 +7,10 @@ permissions:
   contents: read
 jobs:
   delete-neon-branch:
+    # Fork PRs never had a preview branch (and get no secrets).
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - uses: neondatabase/delete-branch-action@4468d825d5a88ef4012f1705a82f02ec3072f776 # v3.2.1
         with:

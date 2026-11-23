@@ -25,6 +25,15 @@ export const AUDIT_ACTIONS = [
   "credits.clawed_back",
   "payout.created",
   "admin.action",
+  "admin.viewed",
+  "admin.mfa_enrolled",
+  "admin.mfa_verified",
+  "admin.mfa_failed",
+  /** Written by the database trigger on "user".role (migration 0008), never by the app. */
+  "admin.role_changed",
+  "admin.role_change_refused",
+  "canary.cover_passed",
+  "canary.cover_failed",
   "account.exported",
   "account.deleted",
 ] as const;

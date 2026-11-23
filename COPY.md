@@ -266,17 +266,17 @@ Time-Bank is for students. Your PC works for the network at night and earns cred
 
 Switch your PC to earn credits in your dashboard. Its pieces of other people's jobs then earn credits instead of pay for GPU time. Your electricity is still paid back in rupees.
 
-Credits are counted in standard GPU-hours. For now every GPU earns the same: one standard GPU-hour for each hour of verified work. Faster GPUs will earn more once our speed scores are checked against a real RTX 3060.
+Credits count the work your PC does, not the hours it takes. They're in standard GPU-hours: one is the work an RTX 3060 does in an hour. So a faster GPU earns more in a night, a slower one less, and the same work always earns the same.
 
-Your hostel PC running from midnight to 6 AM earns 6 standard GPU-hours.
+An RTX 3060 working from midnight to 6 AM earns about 6 standard GPU-hours.
 
-New credits wait until the work is verified. Either its check matched, or it wasn't picked for a check and a day has passed with your PC in good standing.
+New credits wait until the work is verified. Either its check matched; or nobody else's PC could check it and your PC then passed a known-answer test; or it wasn't picked for a check and a day has passed with your PC in good standing.
 
 ### Spending credits
 
 Pick "Pay with Time-Bank credits" on a quote. Your job's pieces run in parallel on as many GPUs as are free, so a big batch finishes fast. That's your temporary cluster.
 
-A job costs its GPU-hours plus the 12% verification buffer. For example, a 12 GPU-hour job during a hackathon (4 GPUs for 3 hours) costs 13.44 standard GPU-hours.
+A job costs the work in it, in standard GPU-hours, plus the 12% verification buffer. For example, a job with 12 standard GPU-hours of work during a hackathon (4 GPUs for 3 hours) costs 13.44 standard GPU-hours.
 
 Your job runs on the same approved job types as everyone else's.
 
@@ -384,7 +384,7 @@ To log you in, run your jobs, pay owners, keep the network safe, and email you a
 
 PCs on the network see the piece of a job they work on, in plain form, while they work on it.
 
-To check that PCs are honest, a piece of your job may be run again on one or two other PCs, while your job's data still exists (up to 7 days after it ends).
+To check that PCs are honest, a piece of your job may be run again on one or two other PCs. Once it's checked, it may also go to one more PC as a known-answer test. Both only happen while your job's data still exists (up to 7 days after it ends). You can turn the known-answer reuse off when you quote a job.
 
 Our service providers store or process data for us: Vercel (hosting), Neon (database), Upstash (rate limiting), Resend (login emails) and Sentry (error reports, with personal details removed).
 

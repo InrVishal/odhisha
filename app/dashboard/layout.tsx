@@ -3,8 +3,11 @@ import Link from "next/link";
 import { DashboardNav, type NavItem } from "@/components/dashboard/nav";
 import { MoonMark } from "@/components/night-sky";
 import { site } from "@/content/site";
+import { isAdmin } from "@/lib/admin";
 import { signOut } from "@/lib/auth";
 import { requireUserOrRedirect } from "@/lib/auth/guards";
+import { getDb } from "@/lib/db";
+import { getEnv } from "@/lib/env";
 
 export const metadata: Metadata = {
   title: { default: "Dashboard", template: `%s · Dashboard · ${site.name}` },
@@ -24,9 +27,10 @@ const ITEMS: NavItem[] = [
 
 export default async function DashboardLayout({ children }: LayoutProps<"/dashboard">) {
   const user = await requireUserOrRedirect();
-  // The Admin link is a convenience only: the admin page checks the role in
-  // the database itself, on every request.
-  const items = user.role === "admin" ? [...ITEMS, { href: "/dashboard/admin", label: "Admin" }] : ITEMS;
+  // The Admin link is a convenience only: /admin checks everything itself,
+  // on every request. Both keys are read fresh here too (never from the session).
+  const admin = await isAdmin(await getDb(), user.id, getEnv().ADMIN_EMAILS);
+  const items = admin ? [...ITEMS, { href: "/admin", label: "Admin" }] : ITEMS;
 
   async function logout() {
     "use server";

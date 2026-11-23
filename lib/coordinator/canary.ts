@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
 import { aliasedTable } from "drizzle-orm";
 import type { Db } from "@/lib/db/client";
 import { fragments, jobs, nodes } from "@/lib/db/schema";
@@ -44,6 +44,8 @@ export async function createKnownAnswerCanary(
   const check = aliasedTable(fragments, "agreed_check");
   const checker = aliasedTable(nodes, "agreed_checker");
   const ran = aliasedTable(nodes, "ran");
+  const copy = aliasedTable(fragments, "my_copy");
+  const copier = aliasedTable(nodes, "my_copier");
   const candidates = await db
     .select({ p: fragments, j: jobs })
     .from(fragments)
@@ -58,10 +60,21 @@ export async function createKnownAnswerCanary(
         isNotNull(fragments.outputKey),
         isNull(jobs.purgedAt),
         isNull(jobs.challenge),
+        // The buyer can opt out of their pieces being reused this way.
+        eq(jobs.canaryReuse, true),
         // The answer is only "known" if two different owners agreed on it.
         ne(checker.ownerId, ran.ownerId),
         ne(ran.status, "quarantined"),
         ne(checker.status, "quarantined"),
+        // Never a piece this account already ran, checked or was sent (the
+        // device and network rules are checked below, with mayCheck).
+        notExists(
+          db
+            .select({ one: sql`1` })
+            .from(copy)
+            .innerJoin(copier, or(eq(copier.id, copy.completedByNodeId), eq(copier.id, copy.leaseNodeId)))
+            .where(and(eq(copy.jobId, fragments.jobId), eq(copy.seq, fragments.seq), eq(copier.ownerId, node.ownerId))),
+        ),
       ),
     )
     .orderBy(desc(sql`${jobs.gpuClass} = ${node.gpuClass}`), sql`random()`)

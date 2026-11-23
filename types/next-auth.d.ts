@@ -1,18 +1,12 @@
 import type { DefaultSession } from "next-auth";
 
-type Role = "user" | "admin";
-
+/**
+ * The session carries the user id only. Admin status is never put in the
+ * session or a cookie: it's read from the database on every request
+ * (lib/admin.ts, isAdmin).
+ */
 declare module "next-auth" {
   interface Session {
-    user: { id: string; role: Role } & DefaultSession["user"];
-  }
-  interface User {
-    role?: Role;
-  }
-}
-
-declare module "@auth/core/adapters" {
-  interface AdapterUser {
-    role: Role;
+    user: { id: string } & DefaultSession["user"];
   }
 }

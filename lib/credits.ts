@@ -53,10 +53,10 @@ export function addMonths(d: Date, n: number): Date {
  * The outer row in correlated subqueries, fully qualified: a bare column name
  * would resolve to the subquery's own credit_ledger alias.
  */
-const outer = (column: string) => sql`${sql.identifier("credit_ledger")}.${sql.identifier(column)}`;
-const OUTER_ID = outer("id");
-const OUTER_FRAGMENT = outer("fragment_id");
-const OUTER_NODE = outer("node_id");
+const LEDGER = sql.identifier("credit_ledger");
+const OUTER_ID = sql`${LEDGER}.${sql.identifier("id")}`;
+const OUTER_FRAGMENT = sql`${LEDGER}.${sql.identifier("fragment_id")}`;
+const OUTER_NODE = sql`${LEDGER}.${sql.identifier("node_id")}`;
 
 export type GrantState = "pending" | "available" | "expired" | "clawed_back";
 
@@ -91,6 +91,8 @@ export async function grants(q: Q, userId: string, now: Date, where?: { nodeId?:
       clawed: sql<boolean>`exists (select 1 from credit_ledger c where c.grant_id = ${OUTER_ID} and c.entry_type = 'clawback')`,
       // Its check (or the tie-break) agreed with it.
       matched: sql<boolean>`exists (select 1 from fragment v where v.parent_fragment_id = ${OUTER_FRAGMENT} and v.kind = 'verification' and v.verdict = 'match')`,
+      // Canary-only: no independent PC could check it, and a canary after it passed.
+      covered: sql<boolean>`exists (select 1 from canary_cover cc where cc.fragment_id = ${OUTER_FRAGMENT} and cc.status = 'passed')`,
       picked: sql<boolean>`exists (select 1 from fragment f join fragment p on p.job_id = f.job_id and p.seq = f.seq and p.kind = 'primary' and p.verify where f.id = ${OUTER_FRAGMENT})`,
       standing: sql<boolean>`exists (select 1 from node n where n.id = ${OUTER_NODE} and n.status not in ('quarantined', 'revoked'))`,
       old: sql<boolean>`${g.createdAt} <= ${settled}::timestamptz`,
@@ -107,7 +109,7 @@ export async function grants(q: Q, userId: string, now: Date, where?: { nodeId?:
     )
     .orderBy(asc(g.expiresAt), asc(g.id));
   return rows.map((r) => {
-    const verified = Boolean(r.matched) || (!r.picked && Boolean(r.old) && Boolean(r.standing));
+    const verified = Boolean(r.matched) || Boolean(r.covered) || (!r.picked && Boolean(r.old) && Boolean(r.standing));
     const state: GrantState = r.clawed ? "clawed_back" : r.expired ? "expired" : verified ? "available" : "pending";
     return {
       id: r.id,

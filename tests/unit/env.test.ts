@@ -159,3 +159,27 @@ describe("deployed defaults and Vercel Marketplace names", () => {
     expect(env.UPSTASH_REDIS_REST_URL).toBe("https://example.upstash.io");
   });
 });
+
+describe("admin allowlist and database TLS (Phase 8)", () => {
+  it("ADMIN_EMAILS is a lower-cased list; empty means nobody is an admin", () => {
+    expect(parseEnv(devEnv).ADMIN_EMAILS).toEqual([]);
+    expect(parseEnv({ ...devEnv, ADMIN_EMAILS: " Me@Example.in , you@example.in " }).ADMIN_EMAILS).toEqual(["me@example.in", "you@example.in"]);
+    expect(issuesOf({ ...devEnv, ADMIN_EMAILS: "me@example.in, not-an-email" }).join()).toMatch(/ADMIN_EMAILS/);
+  });
+
+  it("an ADMIN_ variable can't be NEXT_PUBLIC_ (it would ship to the browser)", () => {
+    expect(issuesOf({ ...devEnv, NEXT_PUBLIC_ADMIN_EMAILS: "me@example.in" }).join()).toMatch(/NEXT_PUBLIC_ADMIN_EMAILS/);
+  });
+
+  it("deployed: the database connection must verify the server certificate", () => {
+    expect(issuesOf(prodEnv)).toEqual([]);
+    // Neon: wss://, verified by Node. Anything else needs sslmode=verify-full.
+    expect(issuesOf({ ...prodEnv, DATABASE_URL: "postgresql://u:p@db.example.com/db" }).join()).toMatch(/DATABASE_URL: must use TLS/);
+    expect(issuesOf({ ...prodEnv, DATABASE_URL: "postgresql://u:p@db.example.com/db?sslmode=require" }).join()).toMatch(/DATABASE_URL: must use TLS/);
+    expect(issuesOf({ ...prodEnv, DATABASE_URL: "postgresql://u:p@db.example.com/db?sslmode=verify-full" })).toEqual([]);
+    expect(issuesOf({ ...prodEnv, DATABASE_URL: "postgresql://u:p@ep-x.neon.tech/db?sslmode=disable" }).join()).toMatch(/DATABASE_URL: must use TLS/);
+    expect(issuesOf({ ...prodEnv, DATABASE_URL_READONLY: "postgresql://r:p@db.example.com/db" }).join()).toMatch(/DATABASE_URL_READONLY: must use TLS/);
+    // Local dev is unaffected.
+    expect(issuesOf({ ...devEnv, DATABASE_URL: "postgres://postgres:postgres@localhost:5432/x" })).toEqual([]);
+  });
+});

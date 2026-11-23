@@ -4,7 +4,9 @@ import { ipHashSecret } from "@/lib/auth";
 import { requireUserOrRedirect } from "@/lib/auth/guards";
 import { CoordinatorError } from "@/lib/coordinator/errors";
 import { maybeTick } from "@/lib/coordinator/tick";
+import { alertConfig } from "@/lib/alerts";
 import { getDb } from "@/lib/db";
+import { getEnv } from "@/lib/env";
 
 /**
  * Shared server-side setup for dashboard pages. Every page starts here, so
@@ -19,7 +21,8 @@ export async function pageContext() {
 /** Moves the scheduler along (throttled), like the API does when a buyer looks at a job. */
 export async function tickQuietly(db: Awaited<ReturnType<typeof getDb>>): Promise<void> {
   try {
-    await maybeTick(db, new Date(), ipHashSecret());
+    const env = getEnv();
+    await maybeTick(db, new Date(), ipHashSecret(), { alerts: alertConfig(env), sybil: env.SYBIL_CHECKER_RULES });
   } catch (err) {
     console.error("[tick] failed", err instanceof Error ? err.name : typeof err);
   }

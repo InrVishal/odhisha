@@ -6,7 +6,8 @@ Every suite below runs in CI (`.github/workflows/ci.yml`) and must pass before a
 | --- | --- | --- | --- |
 | 1 | Unit (Vitest, incl. fast-check property tests) | `npm run test:unit` | ✅ |
 | 1 | Unit + integration with coverage (90% lines on `lib/`) | `npm run test:coverage` | ✅ |
-| 2 | Integration against Postgres | `npm run test:integration` | ✅ |
+| 2 | Integration against Postgres, as the least-privilege `app_runtime` role | `npm run test:integration` | ✅ |
+| 2 | Canary classifier, n = 1000 per class (its own CI job) | `CANARY_CLASSIFIER=1 npx vitest run tests/integration/canary.test.ts -t "n = 1000"` | ✅ |
 | 3 | Security tests (IDOR on every resource, missing session, CSRF, tampered signatures, replayed nonces, oversized payloads, banned file types, rate limits, tokens, headers, append-only) | part of `npm test` and `npm run test:e2e` | ✅ more each phase |
 | 4 | Agent (pytest, 90%+ coverage; sandbox escape tests run real containers when Docker is up) | `cd agent && pytest --cov` | ✅ |
 | 4 | Agent static checks: ruff, `mypy --strict`, bandit, pip-audit | `cd agent && ruff check . && ruff format --check . && mypy && bandit -r src -c pyproject.toml && pip-audit -r requirements.lock` | ✅ |
@@ -14,9 +15,12 @@ Every suite below runs in CI (`.github/workflows/ci.yml`) and must pass before a
 | 5 | End-to-end (Playwright: Chromium, Firefox, WebKit, mobile) | `npm run build && npm run test:e2e` | ✅ site flows; full job flow ⏳ phase 5 |
 | 6 | Accessibility (axe-core on every page, zero serious/critical) + keyboard-only | `npm run build && npm run test:a11y` | ✅ |
 | 7 | Lighthouse CI (90+ every category, median of 3) | `npx @lhci/cli@0.16.1 autorun --config=lighthouserc.cjs` (set `LHCI_BASE_URL`) | ✅ configured, see notes |
-| 7 | k6 load (p95 < 300 ms at 200 VUs) | `k6 run load/quote-and-poll.js` | ⏳ phase 8 |
-| 8 | Semgrep + CodeQL + gitleaks + npm audit + OSV | CI job `4 · Security scans` (Semgrep locally: `semgrep scan --config .semgrep.yml`) | ✅ configured |
-| 8 | OWASP ZAP baseline against the preview | CI job `7 · OWASP ZAP baseline` | ✅ configured |
+| 7 | k6 load (p95 < 300 ms at 200 VUs on quote, lease, heartbeat, hand-in) | `ADMIN_URL=<local postgres> bash tools/load/prepare-db.sh 200 load-seed.json`, start the build with `load.env`, then `k6 run -e BASE_URL=... -e SEED_FILE=load-seed.json tools/load/k6-load.js` | ✅ CI job 9 |
+| 8 | Semgrep (rules tested with `semgrep --test tools/semgrep`) + CodeQL + gitleaks + npm audit + OSV + pip-audit + Trivy (workload images) + zizmor (workflows) | CI job `4 · Security scans` | ✅ |
+| 8 | Bundle scan: no secrets, server-only names or source maps in anything a browser downloads | `npm run build && node scripts/scan-bundle.mjs` | ✅ |
+| 8 | Smoke test (exposed files, source maps, admin 404s, error pages): build, every preview, production after deploy | `node scripts/smoke.mjs <url>` | ✅ |
+| 8 | Database exposure (no Data API/GraphQL, TLS only, roles without powers) on each preview branch | `tests/live/db-exposure.ts` | ✅ |
+| 8 | OWASP ZAP full (active) scan against the preview | CI job `7 · OWASP ZAP full scan` | ✅ |
 | 9 | Banned-words copy check (source, COPY.md sync, and the built site) | `npm run build && npm run copy:check` | ✅ |
 | – | Live security-header check | `node scripts/check-headers.mjs <url>` | ✅ |
 
@@ -167,3 +171,23 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres npm run t
 | Spending the same credits twice | Yes | At confirm (row lock) | The second confirm gets 409 `not_enough_credits` (`timebank.test.ts`) |
 | Cashing out credits | Not possible | n/a | No entry type, function or route turns credits into money (`timebank.test.ts`) |
 | Payout held | n/a | While a check is open, or the PC is quarantined | `heldPaise` in `/api/earnings` and on the dashboard |
+
+**Phase 8** (security lockdown, canary-only verification, credits per unit of work):
+- **Unit**: `totp.test.ts` (RFC 6238 test vectors, ±1 step, no reuse), `scan-bundle.test.ts` (finds planted secret values, patterns, server-only names, source maps), `env.test.ts` (ADMIN_EMAILS, TLS-verified database URLs), `emi.test.ts` (40% default, the pricing page's rate, payoff at 20/40/70%).
+- **Integration** (all as `app_runtime`): `admin.test.ts` (A2–A5, B), `db-roles.test.ts` (privileges table by table and column by column; readonly), `mass-assignment.test.ts` (A1), `canary-only.test.ts` (E1, E3), `api-security.test.ts` (IDOR on every resource), `canary.test.ts` (E5, n = 1000 per class, its own CI job).
+- **Live, every preview**: the deployment runs as `app_runtime` (admin reports as `readonly`), `db-exposure.ts`, `smoke.mjs`, and in a real browser: the admin sets up an authenticator; buyer and owner get 404s on `/admin`, every admin API method and the admin server actions called by ID.
+
+**Attack table, Phase 8 additions:**
+
+| Attack | Detected | How fast | Consequence |
+| --- | --- | --- | --- |
+| One person's PCs (lab, 3-laptop demo) vouching for each other | Yes: they never check each other | At lease time | The check goes canary-only: pay held until a later canary passes, no trust gain; a failed canary (or a replay) reverses the pay of every covered piece and claws back its credits (`canary-only.test.ts`) |
+| Earning more credits by being slow | Not possible | n/a | Credits count the work (reference GPU-seconds of the piece), not the time taken (`timebank.test.ts`) |
+| Telling known-answer canaries from real work | No better than chance | n/a | Upper 95% bound of a classifier's held-out accuracy ≤ 0.55 at n = 1000 per class (`canary.test.ts`) |
+| Making yourself admin through the app | Not possible | n/a | No input takes `role`; the app's DB role can't write it; the trigger undoes it for any other role, audits it and emails the admins (`admin.test.ts`, `mass-assignment.test.ts`) |
+| Admin with only one key (DB role or allowlist) | Yes | Every request | 404 (`admin.test.ts`) |
+| Stolen admin session older than 15 minutes, or without the code | Yes | Every request | Admin pages ask to log in again / for the code; admin API 403 (`admin.test.ts`) |
+| Calling an admin server action by its ID | Yes | Every call | 404, nothing happens (`dashboard.spec.ts`) |
+| Spoofed `x-middleware-subrequest` or role headers | Ignored | n/a | 404 (`admin.test.ts`, `smoke.mjs`) |
+| Reading the database directly (REST, GraphQL, SQL from the app) | Not possible | n/a | No Data API/GraphQL, no user SQL, least-privilege roles (`db-exposure.ts`, Semgrep, `db-roles.test.ts`) |
+| Fetching `/.env`, `/.git/config`, source maps | 404 | n/a | `smoke.mjs` on the build, previews and production |

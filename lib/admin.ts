@@ -13,12 +13,21 @@ import { auditLog, buyerLedger, creditLedger, jobs, nodes, ownerLedger, users } 
 export const ADMIN_LIST_LIMIT = 100;
 
 /**
- * True only for a live account whose role is admin in the database right now
- * (the session's copy of the role is never trusted for admin actions).
+ * Admin is two keys, and both are checked here, fresh, on every call:
+ * 1. role = 'admin' on the account in the database right now (never a copy
+ *    from a cookie, the session or the client), and
+ * 2. the account's email on the ADMIN_EMAILS server-side allowlist.
+ * A deleted account is never an admin. Changing either key alone does nothing.
  */
-export async function isAdmin(db: Db, userId: string): Promise<boolean> {
-  const [row] = await db.select({ role: users.role, deletedAt: users.deletedAt }).from(users).where(eq(users.id, userId)).limit(1);
-  return Boolean(row && !row.deletedAt && row.role === "admin");
+export async function isAdmin(db: Db, userId: string, allowlist: readonly string[]): Promise<boolean> {
+  if (allowlist.length === 0 || !userId) return false;
+  const [row] = await db
+    .select({ role: users.role, email: users.email, deletedAt: users.deletedAt })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!row || row.deletedAt || row.role !== "admin" || !row.email) return false;
+  return allowlist.includes(row.email.trim().toLowerCase());
 }
 
 export async function adminTotals(db: Db) {

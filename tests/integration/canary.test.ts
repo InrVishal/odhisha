@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
 import * as H from "@/lib/api/handlers";
@@ -31,7 +31,8 @@ function prng(seed: number) {
 }
 const WORDS = "order refund delivery late screen battery charger invoice account password login train ticket hostel exam fee lab project report meeting tomorrow today please help thanks payment failed twice app crash phone laptop fan noise warranty".split(" ");
 function buyerTexts(r: () => number): string[] {
-  const n = 5 + Math.floor(r() * 75);
+  // 3 to 20 lines: small batches keep this test's 2,000+ jobs fast. Canaries and real work share the generator.
+  const n = 3 + Math.floor(r() * 18);
   return Array.from({ length: n }, () => {
     const len = 3 + Math.floor(r() * 14);
     const s = Array.from({ length: len }, () => WORDS[Math.floor(r() * WORDS.length)]).join(" ");
@@ -199,21 +200,55 @@ describe("known-answer canaries", () => {
 });
 
 describe("can a cheater tell canaries from real work?", () => {
-  it(
-    "known-answer canaries: a classifier on everything the agent sees does no better than chance; the made-up fallback is easy to spot",
-    { timeout: 600_000 },
+  /** Wilson score interval: the upper end of the 95% confidence interval for an accuracy. */
+  function wilsonUpper(right: number, n: number, z = 1.96): number {
+    const p = right / n;
+    return (p + (z * z) / (2 * n) + z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / (1 + (z * z) / n);
+  }
+
+  /**
+   * Makes the next lease of this PC a canary or real work the way production
+   * decides it (a measured PC, an hour since its last canary, a 1-in-20
+   * draw), without touching anything the agent can see, such as the speed
+   * score its lease length comes from.
+   */
+  function forceNext(h: Harness, canary: boolean) {
+    let first = true;
+    h.deps.challengeRand = (max) => {
+      if (first) {
+        first = false;
+        return canary ? 0 : 1;
+      }
+      return randomInt(max);
+    };
+  }
+
+  // About 2,000 jobs: its own CI job ("3b · Canary classifier") runs it, with CANARY_CLASSIFIER=1.
+  it.runIf(process.env.CANARY_CLASSIFIER === "1")(
+    "known-answer canaries: n = 1000 of each; the upper 95% bound of a classifier's held-out accuracy is at most 0.55 (chance is 0.50)",
+    { timeout: 3_600_000 },
     async () => {
-      const N = 40;
+      const N = 1000;
+      const TESTERS = 4;
       const h = await setup();
-      const [ra, rb, rc] = await Promise.all(["ran", "checked", "tested"].map((n) => makeUser(h.db, `${n}@example.in`)));
+      h.deps.checkRand = () => 0.99;
+      const [ra, rb] = await Promise.all(["ran", "checked"].map((n) => makeUser(h.db, `${n}@example.in`)));
       const buyer = await makeUser(h.db, "buyer@example.in");
       const A = await registerNode(h, ra!, { name: "A" });
       const B = await registerNode(h, rb!, { name: "B" });
-      const C = await registerNode(h, rc!, { name: "C" });
-      for (const n of [A, B, C]) await beat(h, n.token);
+      const testers = [];
+      for (let i = 0; i < TESTERS; i++) testers.push(await registerNode(h, await makeUser(h.db, `tester${i}@example.in`), { name: `T${i}` }));
+      // Everyone measured (same speed score for canaries and real work), last canary over an hour ago.
+      for (const n of [A, B, ...testers]) {
+        await beat(h, n.token);
+        await h.db.update(nodes).set({ benchmarkScore: 1000, lastCanaryAt: new Date(h.clock.now().getTime() - 2 * 3600_000) }).where(eq(nodes.id, n.nodeId));
+      }
       const r = prng(42);
-      // A pool of verified pieces: A ran each, B's check matched.
-      for (let i = 0; i < N + 30; i++) {
+      // A pool of verified pieces: A ran each, B's check matched. Every canary
+      // is a different one (below), as they would be in a network with a long
+      // history, so the canary class is a fair sample of real pieces.
+      forceNext(h, false);
+      for (let i = 0; i < N + 10; i++) {
         await job(h, buyer, buyerTexts(r));
         const la = (await lease(h, A.token))!;
         await complete(h, A.token, la, honest(la));
@@ -225,44 +260,59 @@ describe("can a cheater tell canaries from real work?", () => {
       const ys: number[] = [];
       for (let i = 0; i < 2 * N; i++) {
         const canary = i % 2 === 1;
-        await nextLeaseIsCanary(h, C.nodeId, canary);
+        const tester = testers[Math.floor(i / 2) % TESTERS]!;
+        forceNext(h, canary);
         if (!canary) await job(h, buyer, buyerTexts(r));
-        const l = (await lease(h, C.token))!;
+        const l = (await lease(h, tester.token))!;
         const f = (await h.db.select().from(fragments).where(eq(fragments.id, l.parsed.taskId)))[0]!;
         expect(f.canary).toBe(canary);
         xs.push(features(l));
         ys.push(canary ? 1 : 0);
-        await complete(h, C.token, l, honest(l));
-        h.clock.advance(60);
+        await complete(h, tester.token, l, honest(l));
+        // Test bookkeeping the agent never sees: a piece used as a canary is
+        // taken out of the pool (marked purged), so none is used twice.
+        if (canary) await h.db.update(jobs).set({ purgedAt: h.clock.now() }).where(eq(jobs.id, f.jobId));
+        // Each tester's last canary stays more than an hour ago.
+        await h.db.update(nodes).set({ lastCanaryAt: new Date(h.clock.now().getTime() - 2 * 3600_000) }).where(eq(nodes.id, tester.nodeId));
+        h.clock.advance(1);
       }
-      const knownAnswer = heldOutAccuracy(xs, ys);
+      const acc = heldOutAccuracy(xs, ys);
+      const upper = wilsonUpper(Math.round(acc * xs.length), xs.length);
 
-      // Control: the same classifier against the made-up fallback challenges (no verified pieces in this database).
+      // Control: the same classifier against the made-up fallback (no verified pieces in this database).
+      const M = 200;
       const h2 = await setup();
+      h2.deps.checkRand = () => 0.99;
       const rx = await makeUser(h2.db, "x@example.in");
       const buyer2 = await makeUser(h2.db, "buyer2@example.in");
       const X = await registerNode(h2, rx, { name: "X" });
       await beat(h2, X.token);
+      await h2.db.update(nodes).set({ benchmarkScore: 1000 }).where(eq(nodes.id, X.nodeId));
       h2.deps.challenges = true;
       const xs2: number[][] = [];
       const ys2: number[] = [];
       const r2 = prng(43);
-      for (let i = 0; i < 2 * N; i++) {
+      for (let i = 0; i < 2 * M; i++) {
         const canary = i % 2 === 1;
-        await nextLeaseIsCanary(h2, X.nodeId, canary);
+        await h2.db.update(nodes).set({ lastCanaryAt: new Date(h2.clock.now().getTime() - 2 * 3600_000) }).where(eq(nodes.id, X.nodeId));
+        forceNext(h2, canary);
         if (!canary) await job(h2, buyer2, buyerTexts(r2));
         const l = (await lease(h2, X.token))!;
         xs2.push(features(l));
         ys2.push(canary ? 1 : 0);
         if (!canary) await complete(h2, X.token, l, honest(l));
         else await h2.db.update(fragments).set({ status: "cancelled" }).where(eq(fragments.id, l.parsed.taskId));
-        h2.clock.advance(60);
+        h2.clock.advance(1);
       }
       const madeUpFallback = heldOutAccuracy(xs2, ys2);
 
-      console.log(`[canary classifier] held-out accuracy (chance 0.50, n=${2 * N} each): known-answer canaries ${knownAnswer.toFixed(2)}, made-up fallback ${madeUpFallback.toFixed(2)}`);
-      // n = 80: chance ± 3.2 standard errors.
-      expect(knownAnswer).toBeLessThanOrEqual(0.68);
+      // stderr: the default reporter doesn't show a passing test's console output.
+      process.stderr.write(
+        `[canary classifier] known-answer canaries: held-out accuracy ${acc.toFixed(3)} on n=${N} canaries + ${N} real pieces, ` +
+          `95% upper bound ${upper.toFixed(3)} (must be <= 0.55; chance 0.50). Made-up fallback: ${madeUpFallback.toFixed(2)} (n=${M} each)\n`,
+      );
+      expect(xs.length).toBe(2 * N);
+      expect(upper).toBeLessThanOrEqual(0.55);
       // The test has teeth: it does spot the made-up ones (a 250-sentence piece among small real jobs).
       expect(madeUpFallback).toBeGreaterThanOrEqual(0.9);
     },

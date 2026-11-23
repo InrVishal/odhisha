@@ -22,6 +22,7 @@ export function NewJobForm({ workloads, classes }: { workloads: WorkloadOption[]
   const ids = useId();
   const [type, setType] = useState<WorkloadOption["type"]>(workloads[0]?.type ?? "text_embeddings");
   const [gpuClass, setGpuClass] = useState("cpu");
+  const [canaryReuse, setCanaryReuse] = useState(true);
   const [texts, setTexts] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [width, setWidth] = useState(512);
@@ -75,10 +76,10 @@ export function NewJobForm({ workloads, classes }: { workloads: WorkloadOption[]
       type === "image_resize" ? { width, height, format, fit } : type === "image_captioning" ? { maxWords } : {};
     let body: unknown;
     if (spec!.itemKind === "text") {
-      body = { workloadType: type, gpuClass, params, texts: lines };
+      body = { workloadType: type, gpuClass, params, texts: lines, canaryReuse };
     } else {
       const form = new FormData();
-      form.set("request", JSON.stringify({ workloadType: type, gpuClass, params }));
+      form.set("request", JSON.stringify({ workloadType: type, gpuClass, params, canaryReuse }));
       for (const f of files) form.append("images", f, f.name);
       body = form;
     }
@@ -118,6 +119,27 @@ export function NewJobForm({ workloads, classes }: { workloads: WorkloadOption[]
           ))}
         </select>
         <p className="text-sm text-mist">Only PCs of this kind run your job. For the laptop demo, pick &quot;Laptop, CPU only&quot;.</p>
+      </div>
+
+      <div className="flex items-start gap-2">
+        <input
+          id={`${ids}-reuse`}
+          type="checkbox"
+          checked={canaryReuse}
+          onChange={(e) => setCanaryReuse(e.target.checked)}
+          className="mt-1"
+          aria-describedby={`${ids}-reuse-help`}
+        />
+        <div>
+          <label htmlFor={`${ids}-reuse`} className="text-sm text-lavender">
+            Let checked pieces of this job be reused as known-answer tests
+          </label>
+          <p id={`${ids}-reuse-help`} className="text-sm text-mist">
+            Once two different people&apos;s PCs agree on a piece, we may send it to a third PC to test that PC is honest, until your
+            data is deleted 7 days after the job. Untick to keep your pieces on the PCs that run and check them only. Your own
+            job is checked either way.
+          </p>
+        </div>
       </div>
 
       {spec.itemKind === "text" ? (

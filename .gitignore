@@ -46,3 +46,11 @@ next-env.d.ts
 /test-results
 /playwright-report
 /lhci_reports
+
+# Load test (tools/load): local seed data, the throwaway DB login, results
+load-seed.json
+load.env
+k6-summary.json
+*.server.log
+smoke-server.log
+load-server.log

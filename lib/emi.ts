@@ -25,11 +25,15 @@ export const EMI_DEFAULTS = Object.freeze({
   months: 12,
   hoursPerNight: 8,
   nightsPerMonth: 30,
-  /** Share of night hours with work. Not a promise: there may be no jobs. */
-  utilisationPct: 50,
+  /** Share of night hours with work. A projection, not a promise: there may be no jobs. */
+  utilisationPct: 40,
+  /** The same owner rate the pricing page uses. */
   ownerRatePaisePerHr: DEFAULT_OWNER_RATE_PAISE_PER_HR,
   tariffPaisePerKwh: DEFAULT_TARIFF_PAISE_PER_KWH,
 });
+
+/** Low, middle and high amounts of work, shown side by side so one guess isn't mistaken for a forecast. */
+export const UTILISATION_SCENARIOS = [20, 40, 70] as const;
 
 /** Payoff beyond this many months is shown as "not within 10 years". */
 export const MAX_PAYOFF_MONTHS = 120;
@@ -170,4 +174,19 @@ export function simulateEmi(input: EmiInput): EmiResult {
     schedule,
     demo: true,
   };
+}
+
+export interface Scenario {
+  utilisationPct: number;
+  netPaise: number;
+  coveredPct: number;
+  monthsToPayoff: number | null;
+}
+
+/** The same GPU and loan at 20%, 40% and 70% of night hours with work. */
+export function utilisationScenarios(input: EmiInput, levels: readonly number[] = UTILISATION_SCENARIOS): Scenario[] {
+  return levels.map((u) => {
+    const r = simulateEmi({ ...input, utilisationPct: u });
+    return { utilisationPct: u, netPaise: r.earnings.netPaise, coveredPct: r.coveredPct, monthsToPayoff: r.monthsToPayoff };
+  });
 }

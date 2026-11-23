@@ -89,7 +89,12 @@ export const users = pgTable("user", {
   email: text("email").unique(),
   emailVerified: timestamp("emailVerified", { mode: "date" }),
   image: text("image"),
-  // Set in the database only. No UI or API route changes this column.
+  /**
+   * Set in the database only, by the owner role. No UI or API route changes
+   * it, the app's own database role can't (column privilege), and a trigger
+   * undoes and logs any change made by another role (migration 0008).
+   * Admin also needs the email on the ADMIN_EMAILS allowlist.
+   */
   role: userRole("role").notNull().default("user"),
   /**
    * Payout UPI ID, as a keyed hash (HMAC) so one UPI ID can belong to one
@@ -130,6 +135,10 @@ export const sessions = pgTable("session", {
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
   expires: timestamp("expires", { mode: "date" }).notNull(),
+  /** When this login happened. Admin pages need a login from the last 15 minutes. */
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  /** When this session passed the admin second factor (TOTP). Null: it hasn't. */
+  mfaAt: timestamp("mfa_at", { withTimezone: true, mode: "date" }),
 });
 
 export const verificationTokens = pgTable(
@@ -280,6 +289,12 @@ export const jobs = pgTable(
      * time a PC). Holds what the output must satisfy; never sent to agents.
      */
     challenge: jsonb("challenge"),
+    /**
+     * The buyer allows this job's verified pieces to be re-run on other PCs
+     * as known-answer canaries. False: they never leave the PCs that ran and
+     * checked them.
+     */
+    canaryReuse: boolean("canary_reuse").notNull().default(true),
     /** Paid with Time-Bank credits (standard GPU-seconds) instead of money. Null: paid in money. */
     creditsSpent: bigint("credits_spent", { mode: "number" }),
     /** Inputs and outputs are deleted after this time (default: 7 days). */
@@ -340,6 +355,10 @@ export const fragments = pgTable(
   (t) => [
     index("fragment_job_idx").on(t.jobId, t.status),
     index("fragment_lease_idx").on(t.status, t.leaseExpiresAt),
+    // Every copy of one piece (checks, canaries, tie-breaks), the checks of a copy, and the replay check on hand-in.
+    index("fragment_piece_idx").on(t.jobId, t.seq),
+    index("fragment_parent_idx").on(t.parentFragmentId),
+    index("fragment_output_digest_idx").on(t.outputDigest),
     uniqueIndex("fragment_primary_seq_uq").on(t.jobId, t.seq).where(sql`${t.kind} = 'primary'`),
     check("fragment_attempts_range", sql`${t.attempts} >= 0 and ${t.attempts} <= ${t.maxAttempts}`),
     check("fragment_est_positive", sql`${t.estGpuSeconds} > 0`),
@@ -483,6 +502,66 @@ export const auditLog = pgTable(
     meta: jsonb("meta"),
   },
   (t) => [index("audit_actor_idx").on(t.actorId, t.at), index("audit_action_idx").on(t.action, t.at)],
+);
+
+// ─── Admin second factor and alerts ───────────────────────────────────────
+
+/**
+ * An admin's TOTP secret (RFC 6238), sealed with DATA_ENCRYPTION_KEY.
+ * enabledAt null: set up but not confirmed with a code yet. Once confirmed it
+ * can only be reset in the database. lastStep stops a code being used twice.
+ */
+export const adminTotp = pgTable("admin_totp", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "restrict" }),
+  secretSealed: text("secret_sealed").notNull(),
+  enabledAt: timestamp("enabled_at", { withTimezone: true, mode: "date" }),
+  lastStep: bigint("last_step", { mode: "number" }),
+  createdAt: createdAt(),
+});
+
+/** Security alerts already emailed (role changes, refused role changes, second-factor setup), by audit row. */
+export const alertSent = pgTable("alert_sent", {
+  auditId: bigint("audit_id", { mode: "number" }).primaryKey(),
+  /** sent, or skipped (no ADMIN_ALERT_EMAIL configured), or failed (retried next tick). */
+  status: varchar("status", { length: 16 }).notNull(),
+  /** Sends tried. A failing alert is tried at most ALERT_MAX_ATTEMPTS times. */
+  attempts: smallint("attempts").notNull().default(1),
+  createdAt: createdAt(),
+});
+
+// ─── Canary-only verification ──────────────────────────────────────────────
+
+export const coverStatus = pgEnum("cover_status", ["waiting", "passed", "failed"]);
+
+/**
+ * A piece picked for a check that no independent PC could run (every PC that
+ * could check it shares the account, device or network of the PC that ran
+ * it). Instead, the PC that ran it is sent canaries; the piece's pay is held
+ * until one issued after it passes. A pass releases the pay but earns no
+ * trust; a fail reverses it.
+ */
+export const canaryCovers = pgTable(
+  "canary_cover",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => jobs.id, { onDelete: "restrict" }),
+    seq: integer("seq").notNull(),
+    /** The copy that was accepted and paid. */
+    fragmentId: uuid("fragment_id").notNull(),
+    nodeId: uuid("node_id")
+      .notNull()
+      .references(() => nodes.id, { onDelete: "restrict" }),
+    status: coverStatus("status").notNull().default("waiting"),
+    /** The canary that settled it. */
+    canaryFragmentId: uuid("canary_fragment_id"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull(),
+    settledAt: timestamp("settled_at", { withTimezone: true, mode: "date" }),
+  },
+  (t) => [uniqueIndex("canary_cover_fragment_uq").on(t.fragmentId), index("canary_cover_node_idx").on(t.nodeId, t.status)],
 );
 
 /** Tables that the append-only trigger protects. Tests iterate over this. */

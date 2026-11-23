@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { deleteAccount, exportAccount } from "@/lib/account";
-import { isAdmin } from "@/lib/admin";
+import { adminAccess, type SessionRow } from "@/lib/admin-access";
+import type { AlertConfig } from "@/lib/alerts";
 import { AuthzError, type SessionUser } from "@/lib/auth/authz-error";
 import { SESSION_COOKIE_NAMES } from "@/lib/auth/sessions";
 import { audit } from "@/lib/audit";
@@ -47,10 +48,18 @@ export interface Deps {
   sybil?: SybilMode;
   /** Random number in [0, 1) for the extra checks of new and low-trust PCs. */
   checkRand?: () => number;
+  /** Random integer in [0, max) for when a measured PC gets its next canary. Tests pass a fixed one. */
+  challengeRand?: (max: number) => number;
+  /** ADMIN_EMAILS: the second key for admin (with role = 'admin' in the database). */
+  adminEmails?: readonly string[];
+  /** Where the scheduler emails security alerts. */
+  alerts?: AlertConfig;
 }
 
 export interface UserDeps extends Deps {
   user: SessionUser | null;
+  /** This request's session row (login time, second factor), for the admin checks. */
+  session?: SessionRow | null;
 }
 
 function requireUser(d: UserDeps): SessionUser {
@@ -145,7 +154,7 @@ export function quoteHandler(req: Request, d: UserDeps): Promise<Response> {
     const { meta, items } = await parseQuoteBody(req);
     const job = await quoteJob(
       { db: d.db, buyerId: user.id, now: d.now(), masterKey: d.keys.dataKey, ip: clientIp(req.headers), ipSecret: d.ipSecret },
-      { workloadType: meta.workloadType, gpuClass: meta.gpuClass, params: meta.params, items },
+      { workloadType: meta.workloadType, gpuClass: meta.gpuClass, params: meta.params, items, canaryReuse: meta.canaryReuse },
     );
     return json({ job }, 201);
   });
@@ -188,7 +197,7 @@ export function cancelJobHandler(req: Request, d: UserDeps, jobId: string): Prom
 /** Runs the throttled tick; a failure never breaks the request that triggered it. */
 async function tickQuietly(d: Deps): Promise<void> {
   try {
-    await maybeTick(d.db, d.now(), d.ipSecret);
+    await maybeTick(d.db, d.now(), d.ipSecret, { alerts: d.alerts, sybil: d.sybil });
   } catch (err) {
     console.error("[tick] failed", err instanceof Error ? err.name : typeof err);
   }
@@ -385,15 +394,41 @@ export function deleteAccountHandler(req: Request, d: UserDeps): Promise<Respons
 
 // ─── Admin ─────────────────────────────────────────────────────────────────
 
+/**
+ * Every admin API route goes through this. Anyone who isn't an admin
+ * (signed out, buyer, owner, an admin role without the ADMIN_EMAILS key,
+ * any spoofed header) gets the same 404 as a URL that doesn't exist. An admin
+ * whose login is older than 15 minutes, or who hasn't entered an
+ * authenticator code on this session, gets a 403 asking for that.
+ */
+async function requireAdminApi(req: Request, d: UserDeps): Promise<{ userId: string } | Response> {
+  const session = d.user && d.session && d.session.userId === d.user.id ? d.session : null;
+  if (!session) throw notFound();
+  const limited = await limitOr429(d, "nodeManageUser", session.userId);
+  if (limited) return limited;
+  const access = await adminAccess(d.db, session, d.adminEmails ?? [], d.now());
+  if (access.state === "not_admin") throw notFound();
+  assertSameOrigin(req);
+  if (access.state !== "ok") {
+    throw new CoordinatorError(403, "admin_step_up", "Log in again and enter your authenticator code to use admin.");
+  }
+  return { userId: access.userId };
+}
+
+/** Any method an admin route doesn't have: the same 404 as everything else there. */
+export function adminNotFoundHandler(): Promise<Response> {
+  return handle(async () => {
+    throw notFound();
+  });
+}
+
 /** Lets a quarantined PC take work again. Admins only; anyone else gets a 404. */
 export function releaseNodeHandler(req: Request, d: UserDeps, nodeId: string): Promise<Response> {
   return handle(async () => {
-    assertSameOrigin(req);
-    const user = requireUser(d);
-    const limited = await limitOr429(d, "nodeManageUser", user.id);
-    if (limited) return limited;
-    if (!(await isAdmin(d.db, user.id)) || !z.uuid().safeParse(nodeId).success) throw notFound();
-    if (!(await releaseFromQuarantine(d.db, nodeId, user.id, d.ipSecret, clientIp(req.headers)))) {
+    const admin = await requireAdminApi(req, d);
+    if (admin instanceof Response) return admin;
+    if (!z.uuid().safeParse(nodeId).success) throw notFound();
+    if (!(await releaseFromQuarantine(d.db, nodeId, admin.userId, d.ipSecret, clientIp(req.headers)))) {
       throw new CoordinatorError(409, "not_quarantined", "That PC isn't quarantined.");
     }
     return json({ released: true });
@@ -432,7 +467,7 @@ export function leaseHandler(req: Request, d: Deps): Promise<Response> {
     const now = d.now();
     // Agent polls drive the scheduler (Hobby cron runs only daily).
     await tickQuietly(d);
-    const { lease, reason } = await leaseFragment(d.db, a.node, now, d.keys, { challenges: d.challenges, sybil: d.sybil, ip: clientIp(req.headers), ipSecret: d.ipSecret });
+    const { lease, reason } = await leaseFragment(d.db, a.node, now, d.keys, { challenges: d.challenges, sybil: d.sybil, ip: clientIp(req.headers), ipSecret: d.ipSecret, coverRand: d.checkRand, rand: d.challengeRand });
     if (!lease) return json({ task: null, reason, pollAfterSec: reason === "no_work" || reason === "busy" ? 10 : 30 });
     return json(lease);
   });
@@ -487,6 +522,6 @@ export function cronTickHandler(req: Request, d: Deps): Promise<Response> {
     if (!isAuthorizedCron(req.headers.get("authorization"), d.cronSecret)) {
       return errorJson(401, "unauthorized", "Not allowed.");
     }
-    return json({ report: await runTick(d.db, d.now(), d.ipSecret) });
+    return json({ report: await runTick(d.db, d.now(), d.ipSecret, { alerts: d.alerts, sybil: d.sybil }) });
   });
 }

@@ -11,7 +11,7 @@ export interface SignInState {
   error?: string;
 }
 
-const emailSchema = z.object({
+const emailSchema = z.strictObject({
   email: z.string().trim().toLowerCase().max(254).pipe(z.email()),
 });
 

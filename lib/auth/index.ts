@@ -123,8 +123,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth(async () => {
         return true;
       },
       session({ session, user }) {
+        // The id only. Never the role: admin is checked in the database each time.
         session.user.id = user.id;
-        session.user.role = user.role;
         return session;
       },
     },

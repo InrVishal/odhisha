@@ -35,6 +35,7 @@ export const POLICIES = {
   jobSubmitUser: { max: 10, windowSec: 60 },
   nodeManageUser: { max: 20, windowSec: 60 * 60 },
   accountUser: { max: 5, windowSec: 60 * 60 },
+  adminMfaUser: { max: 5, windowSec: 15 * 60 },
   agentNode: { max: 240, windowSec: 60 },
   agentIp: { max: 600, windowSec: 60 },
 } as const satisfies Record<string, Policy>;
