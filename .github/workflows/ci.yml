@@ -304,7 +304,7 @@ jobs:
           set -a; . ./load.env; set +a
           NODE_ENV=production EMAIL_TRANSPORT=console RATE_LIMIT_BACKEND=memory nohup node node_modules/next/dist/bin/next start -p 3400 > load-server.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:3400/api/health >/dev/null && break; sleep 1; done
-          ./k6 run --summary-export k6-summary.json -e BASE_URL=http://127.0.0.1:3400 -e SEED_FILE=load-seed.json tools/load/k6-load.js
+          ./k6 run --summary-export k6-summary.json -e BASE_URL=http://127.0.0.1:3400 -e SEED_FILE="$PWD/load-seed.json" tools/load/k6-load.js
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with: { name: k6-summary, path: k6-summary.json, retention-days: 14 }

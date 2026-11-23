@@ -55,8 +55,10 @@ async function main() {
     const schemas = await db.query<{ nspname: string }>("select nspname from pg_namespace where nspname in ('graphql', 'graphql_public', 'pgrst', 'neon_auth') order by 1");
     check(schemas.rows.length === 0, `no GraphQL / REST schemas (found: ${JSON.stringify(schemas.rows.map((r) => r.nspname))})`);
 
-    const tls = await db.query<{ ssl: boolean; version: string | null }>("select ssl, version from pg_stat_ssl where pid = pg_backend_pid()");
-    check(tls.rows[0]?.ssl === true, `this connection is TLS (${tls.rows[0]?.version ?? "no TLS"}), with the server certificate verified`);
+    // Neon's proxy ends TLS, so the database itself sees a plain connection from the
+    // proxy (pg_stat_ssl says no). What matters is our side: the socket to Neon.
+    const sock = (db as unknown as { connection: { stream: { encrypted?: boolean; authorized?: boolean; getProtocol?: () => string | null } } }).connection.stream;
+    check(sock.encrypted === true && sock.authorized === true, `this connection is TLS (${sock.getProtocol?.() ?? "no TLS"}), with the server certificate verified`);
 
     const powers = await db.query<{ rolname: string; rolsuper: boolean; rolcreaterole: boolean; rolcreatedb: boolean; rolreplication: boolean; rolbypassrls: boolean; rolcanlogin: boolean }>(
       "select rolname, rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls, rolcanlogin from pg_roles where rolname in ('app_runtime', 'readonly') order by 1",
