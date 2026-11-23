@@ -53,9 +53,10 @@ export function addMonths(d: Date, n: number): Date {
  * The outer row in correlated subqueries, fully qualified: a bare column name
  * would resolve to the subquery's own credit_ledger alias.
  */
-const OUTER_ID = sql.raw('"credit_ledger"."id"');
-const OUTER_FRAGMENT = sql.raw('"credit_ledger"."fragment_id"');
-const OUTER_NODE = sql.raw('"credit_ledger"."node_id"');
+const outer = (column: string) => sql`${sql.identifier("credit_ledger")}.${sql.identifier(column)}`;
+const OUTER_ID = outer("id");
+const OUTER_FRAGMENT = outer("fragment_id");
+const OUTER_NODE = outer("node_id");
 
 export type GrantState = "pending" | "available" | "expired" | "clawed_back";
 
