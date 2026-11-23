@@ -40,5 +40,14 @@ const { Client } = require("pg");
 DATABASE_URL="$OWNER_URL" npx tsx scripts/load-seed.ts "$VUS" "$OUT"
 RUNTIME_URL="$(node -e 'const u = new URL(process.env.OWNER_URL); u.username = "app_runtime"; u.password = process.env.PW; process.stdout.write(u.toString())')"
 umask 077
-printf 'DATABASE_URL=%s\n' "$RUNTIME_URL" > load.env
+# One throwaway key pair for every app process (as all Vercel instances share
+# one): without it each process makes its own random keys, and a piece quoted
+# through one process can't be decrypted when leased through another.
+SIGNING_KEY="$(node -e 'process.stdout.write(require("crypto").generateKeyPairSync("ed25519").privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"))')"
+DATA_KEY="$(node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("base64"))')"
+{
+  printf 'DATABASE_URL=%s\n' "$RUNTIME_URL"
+  printf 'COORDINATOR_SIGNING_KEY=%s\n' "$SIGNING_KEY"
+  printf 'DATA_ENCRYPTION_KEY=%s\n' "$DATA_KEY"
+} > load.env
 echo "prepare-db: database ${DB} migrated and seeded; the app connects as app_runtime (see load.env)"

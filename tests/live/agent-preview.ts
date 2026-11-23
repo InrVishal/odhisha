@@ -183,7 +183,9 @@ async function main(): Promise<void> {
     ];
     for (const n of trust) {
       log(`node ${n.id.slice(0, 8)}: trust ${n.trustScore}, checks passed ${n.checksPassed}, failed ${n.checksFailed}`);
-      if (n.trustScore !== 520 || n.checksPassed !== 1 || n.checksFailed !== 0) fail("both PCs should have passed the check (trust 500 → 520)");
+      // At least the cross-check; a known-answer canary (sent at random, as in
+      // production) is one more pass. Each pass is +20 from 500, nothing failed.
+      if (n.checksPassed < 1 || n.checksFailed !== 0 || n.trustScore !== 500 + 20 * n.checksPassed) fail("both PCs should have passed every check (trust 500 + 20 per pass)");
     }
     log("PASS: the piece was re-run on a second PC, the results matched, and both PCs' trust went up");
 
