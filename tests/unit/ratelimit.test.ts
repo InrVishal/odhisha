@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCache } from "@/lib/env";
 import {
   policyFor,
+  withFallback,
   checkLimit,
   getLimiter,
   MemoryLimiter,
@@ -96,6 +97,23 @@ describe("upstash backend", () => {
     const l = getLimiter("agentNode");
     expect(l).not.toBeInstanceOf(MemoryLimiter);
     expect(typeof l.limit).toBe("function");
+  });
+});
+
+describe("when the shared limiter fails (e.g. Upstash quota used up)", () => {
+  it("falls back to an in-memory limiter: still limits, never throws", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failing = async () => {
+      throw new Error("ERR max requests limit exceeded");
+    };
+    const l = withFallback("loginEmail", failing, new MemoryLimiter(POLICIES.loginEmail));
+    const results = [];
+    for (let i = 0; i < POLICIES.loginEmail.max + 1; i++) results.push((await l.limit("a@b.in")).success);
+    expect(results.slice(0, POLICIES.loginEmail.max).every(Boolean)).toBe(true);
+    expect(results.at(-1)).toBe(false);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(String(log.mock.calls[0]?.[0])).not.toContain("a@b.in");
+    log.mockRestore();
   });
 });
 

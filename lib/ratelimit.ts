@@ -82,6 +82,29 @@ export class MemoryLimiter implements Limiter {
 
 const limiters = new Map<PolicyName, Limiter>();
 
+/**
+ * If the shared limiter (Upstash) fails, for example when its monthly quota
+ * runs out, each instance falls back to its own in-memory limiter: limits
+ * still apply (per instance), and requests don't fail with 500s. Logged once
+ * per policy per instance, with the error's name only.
+ */
+export function withFallback(name: PolicyName, primary: (key: string) => Promise<LimitResult>, fallback: Limiter): Limiter {
+  let warned = false;
+  return {
+    async limit(key: string) {
+      try {
+        return await primary(key);
+      } catch (err) {
+        if (!warned) {
+          warned = true;
+          console.error(`[ratelimit] ${name}: shared limiter failed (${err instanceof Error ? err.name : typeof err}); using this instance's own limiter`);
+        }
+        return fallback.limit(key);
+      }
+    },
+  };
+}
+
 export function getLimiter(name: PolicyName): Limiter {
   let l = limiters.get(name);
   if (l) return l;
@@ -95,7 +118,7 @@ export function getLimiter(name: PolicyName): Limiter {
       prefix: `ns:rl:${env.APP_ENV}:${name}`,
       analytics: false,
     });
-    l = { limit: (key) => rl.limit(key) };
+    l = withFallback(name, (key) => rl.limit(key), new MemoryLimiter(policy));
   } else {
     l = new MemoryLimiter(policy);
   }

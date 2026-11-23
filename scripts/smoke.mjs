@@ -70,6 +70,24 @@ async function main() {
   ok(health.text === '{"status":"ok"}', `/api/health says only {"status":"ok"} (got ${health.text.slice(0, 80)})`);
   revealsNothing(health.text, health.res.headers, "/api/health");
 
+  // API security headers come from next.config.ts (the proxy runs on pages
+  // only), so check they're on every kind of API answer, errors included:
+  // exactly one CSP (deny-all), nosniff, frame denial, HSTS on https, no caching.
+  for (const [label, path, init] of [
+    ["200", "/api/health", {}],
+    ["404 unknown path", "/api/does-not-exist", {}],
+    ["405 wrong method", "/api/agent/lease", {}],
+    ["401 no token", "/api/agent/heartbeat", { method: "POST", body: "{}" }],
+    ["403 cross-site write", "/api/jobs/quote", { method: "POST", body: "{}", headers: { origin: "https://evil.example", "content-type": "application/json" } }],
+  ]) {
+    const r = await get(path, init);
+    const csp = r.res.headers.get("content-security-policy") ?? "";
+    ok(csp.startsWith("default-src 'none'") && !csp.includes(","), `API ${label} (${path}): one deny-all CSP (got ${csp.slice(0, 40) || "none"})`);
+    ok(r.res.headers.get("x-content-type-options") === "nosniff" && /deny/i.test(r.res.headers.get("x-frame-options") ?? ""), `API ${label}: nosniff and frame denial`);
+    ok(/no-store/.test(r.res.headers.get("cache-control") ?? ""), `API ${label}: not cacheable`);
+    if (base.startsWith("https://")) ok(/max-age=\d{7,}/.test(r.res.headers.get("strict-transport-security") ?? ""), `API ${label}: HSTS`);
+  }
+
   // CORS: no page or API lets another site read it, even when asked by a hostile
   // Origin. (Vercel's CDN adds "Access-Control-Allow-Origin: *" to public static
   // files only, such as JS chunks, fonts and robots.txt, which hold no user data.)
