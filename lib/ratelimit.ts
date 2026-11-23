@@ -1,6 +1,7 @@
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 import { getEnv, type Env } from "@/lib/env";
+import { timed } from "@/lib/timing";
 
 /**
  * Rate limiting. Upstash in preview/production (shared across all serverless
@@ -103,7 +104,7 @@ export function getLimiter(name: PolicyName): Limiter {
 }
 
 export async function checkLimit(name: PolicyName, key: string): Promise<LimitResult> {
-  return getLimiter(name).limit(key);
+  return timed("rl", () => getLimiter(name).limit(key));
 }
 
 export function retryAfterSeconds(result: LimitResult, now = Date.now()): number {

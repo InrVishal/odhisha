@@ -177,6 +177,8 @@ export const envSchema = z
     SYBIL_CHECKER_RULES: z.enum(["enforce", "report"]).default("enforce"),
     /** Preview load test only: raises the per-IP agent limit (see policyFor in lib/ratelimit.ts). Refused in production. */
     AGENT_IP_LIMIT_PER_MIN: z.coerce.number().int().min(1).max(1_000_000).optional(),
+    /** Preview load test only: Server-Timing on the measured API routes (lib/timing.ts). Refused in production. */
+    SERVER_TIMING: z.enum(["0", "1"]).optional(),
 
     // Payments, UPI payouts and EMI are always simulated in this prototype.
     DEMO_MODE: z
@@ -212,6 +214,9 @@ export const envSchema = z
       });
     }
 
+    if (e.APP_ENV === "production" && e.SERVER_TIMING === "1") {
+      ctx.addIssue({ code: "custom", path: ["SERVER_TIMING"], message: "must not be on in production (it is for the preview load test only)" });
+    }
     if (e.APP_ENV === "production" && e.AGENT_IP_LIMIT_PER_MIN !== undefined) {
       ctx.addIssue({ code: "custom", path: ["AGENT_IP_LIMIT_PER_MIN"], message: "must not be set in production (it is for the preview load test only)" });
     }

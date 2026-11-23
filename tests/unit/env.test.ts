@@ -87,6 +87,11 @@ describe("parseEnv", () => {
     expect(env.AUTH_GOOGLE_ID).toBeUndefined();
   });
 
+  it("refuses SERVER_TIMING=1 in production; allows it on a preview (load test)", () => {
+    expect(issuesOf({ ...prodEnv, SERVER_TIMING: "1" }).join()).toMatch(/SERVER_TIMING/);
+    expect(parseEnv({ ...prodEnv, VERCEL_ENV: "preview", SERVER_TIMING: "1" }).SERVER_TIMING).toBe("1");
+  });
+
   it("refuses AGENT_IP_LIMIT_PER_MIN in production; allows it on a preview (load test)", () => {
     expect(issuesOf({ ...prodEnv, AGENT_IP_LIMIT_PER_MIN: "100000" }).join()).toMatch(/AGENT_IP_LIMIT_PER_MIN/);
     expect(parseEnv({ ...prodEnv, VERCEL_ENV: "preview", AGENT_IP_LIMIT_PER_MIN: "100000" }).AGENT_IP_LIMIT_PER_MIN).toBe(100_000);

@@ -1,5 +1,6 @@
 import type { SQL } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
+import { serverTimingEnabled, timePool } from "@/lib/timing";
 import * as schema from "./schema";
 
 /**
@@ -54,6 +55,7 @@ export async function createDb(url: string, pool: PoolOptions = {}): Promise<DbH
     // Secure WebSockets only: TLS with the certificate checked by Node, never unencrypted.
     neonConfig.useSecureWebSocket = true;
     const pool = new Pool({ connectionString: url });
+    if (serverTimingEnabled()) timePool(pool as unknown as Parameters<typeof timePool>[0]);
     return { db: drizzle(pool, { schema }) as unknown as Db, driver: "neon", close: () => pool.end() };
   }
 
@@ -67,6 +69,7 @@ export async function createDb(url: string, pool: PoolOptions = {}): Promise<DbH
     idleTimeoutMillis: pool.idleTimeoutMillis ?? 10_000,
     ...(verifyFull ? { ssl: { rejectUnauthorized: true } } : {}),
   });
+  if (serverTimingEnabled()) timePool(pg as unknown as Parameters<typeof timePool>[0]);
   return { db: drizzle(pg, { schema }) as unknown as Db, driver: "pg", close: () => pg.end() };
 }
 

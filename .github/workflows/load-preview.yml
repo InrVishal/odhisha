@@ -86,7 +86,8 @@ jobs:
             --env DATABASE_URL="$RUNTIME_DATABASE_URL_POOLED" \
             --env DATABASE_URL_READONLY="$READONLY_DATABASE_URL_POOLED" \
             --env SYBIL_CHECKER_RULES=report \
-            --env AGENT_IP_LIMIT_PER_MIN=1000000)
+            --env AGENT_IP_LIMIT_PER_MIN=1000000 \
+            --env SERVER_TIMING=1)
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
       - name: Target is this run's preview deployment and its load branch (never production)
@@ -115,7 +116,10 @@ jobs:
         env:
           BASE_URL: ${{ steps.deploy.outputs.url }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-        run: ./k6 run --summary-export k6-summary.json -e BASE_URL="$BASE_URL" -e SEED_FILE="$PWD/load-seed.json" tools/load/k6-load.js
+        run: ./k6 run --summary-export k6-summary.json -e BASE_URL="$BASE_URL" -e SEED_FILE="$PWD/load-seed.json" -e SERVER_TIMING=1 tools/load/k6-load.js
+      - name: Per endpoint, where the time went (from Server-Timing)
+        if: always()
+        run: node tools/load/split.mjs k6-summary.json || true
 
       - name: Free-tier quota this run used
         if: always()
@@ -128,7 +132,7 @@ jobs:
           if [ -n "$BRANCH_ID" ]; then
             curl -sS -H "Authorization: Bearer $NEON_API_KEY" -H "Accept: application/json" \
               "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID" \
-              | jq -r '.branch | "Neon (this branch): compute \(.compute_time_seconds // 0) CU-seconds, active \(.active_time_seconds // 0) s, written \(.written_data_bytes // 0) bytes (free plan: 100 CU-hours a month per project)"' || true
+              | jq -r '.branch | "Neon (this branch, as reported so far; Neon updates these with a delay): compute \(.compute_time_seconds // 0) CU-seconds, active \(.active_time_seconds // 0) s, written \(.written_data_bytes // 0) bytes (free plan: 100 CU-hours a month per project)"' || true
           fi
 
       - name: Remove the load deployment
@@ -136,7 +140,15 @@ jobs:
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           TARGET: ${{ steps.deploy.outputs.url }}
-        run: npx --yes vercel@66.5.0 remove "$TARGET" --yes --token="$VERCEL_TOKEN" || true
+        run: |
+          # The REST API (the CLI won't delete without a person approving).
+          host=$(node -e 'process.stdout.write(new URL(process.env.TARGET).hostname)')
+          id=$(curl -sS -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v13/deployments/$host?teamId=$VERCEL_ORG_ID" | jq -r '.id // empty')
+          if [ -n "$id" ]; then
+            curl -sS -o /dev/null -w "removed the load deployment: HTTP %{http_code}\n" -X DELETE -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v13/deployments/$id?teamId=$VERCEL_ORG_ID"
+          else
+            echo "load deployment not found (already removed?)"
+          fi
       - name: Delete the load branch
         if: always()
         uses: neondatabase/delete-branch-action@4468d825d5a88ef4012f1705a82f02ec3072f776 # v3.2.1

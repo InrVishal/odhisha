@@ -133,6 +133,7 @@ Nothing below is ever `NEXT_PUBLIC_`: env validation refuses secret-looking publ
 | `PREVIEW_EMAIL_ALLOWLIST` | previews only: the only addresses magic links go to (empty: previews send no login mail, so scanners can't make them send any) | yes | personal data | — |
 | `NODE_TLS_REJECT_UNAUTHORIZED` | never set it; `0` (certificate checks off) is refused in preview and production | — | no | — |
 | `AGENT_IP_LIMIT_PER_MIN` | preview load test only: raises the per-IP agent limit (200 virtual PCs share one runner IP); set only on the load-test deployment; refused in production | yes | no | — |
+| `SERVER_TIMING` | preview load test only: `1` adds a Server-Timing header (rate-limit, database and total milliseconds; no content) to the five measured API routes; refused in production | yes | no | — |
 | `SYBIL_CHECKER_RULES` | `enforce` (production must) or `report` (previews) | yes | no | — |
 | `CONTACT_EMAIL`, `SITE_URL`, `DEMO_MODE`, `APP_ENV` | privacy page, metadata, demo banner, environment | yes | no | — |
 | `SENTRY_DSN` | reserved; the Sentry SDK isn't installed yet | yes | no | — |

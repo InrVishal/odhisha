@@ -29,7 +29,7 @@ import { SharedArray } from "k6/data";
 import encoding from "k6/encoding";
 import exec from "k6/execution";
 import http from "k6/http";
-import { Counter } from "k6/metrics";
+import { Counter, Trend } from "k6/metrics";
 
 const seed = new SharedArray("seed", () => JSON.parse(open(__ENV.SEED_FILE)));
 const BASES = (__ENV.BASE_URLS || __ENV.BASE_URL).split(",");
@@ -78,8 +78,37 @@ export const options = {
   summaryTrendStats: ["avg", "med", "p(90)", "p(95)", "p(99)", "max", "count"],
 };
 
+// Where each successful response's time went, from the app's Server-Timing
+// header (only the load-test preview sends it: SERVER_TIMING=1):
+// rate limits (Upstash), database (Neon), the app's own work, and outside
+// the function (network, Vercel's edge, cold starts) = k6's time - total.
+const split = {
+  ratelimit: new Trend("split_ratelimit_ms", true),
+  db: new Trend("split_db_ms", true),
+  queries: new Trend("split_db_queries"),
+  app: new Trend("split_app_ms", true),
+  outside: new Trend("split_outside_function_ms", true),
+};
+if (__ENV.SERVER_TIMING === "1") {
+  for (const name of ENDPOINTS) for (const m of Object.values(split)) options.thresholds[`${m.name}{name:${name}}`] = ["p(50)>=0"];
+}
+function timing(res, name) {
+  const h = res.headers["Server-Timing"];
+  if (!h || res.status >= 300) return;
+  const dur = (k) => Number(new RegExp(`(?:^|, )${k};dur=([0-9.]+)`).exec(h)?.[1] ?? NaN);
+  const [rl, db, total] = [dur("rl"), dur("db"), dur("total")];
+  if (![rl, db, total].every(Number.isFinite)) return;
+  const tags = { name };
+  split.ratelimit.add(rl, tags);
+  split.db.add(db, tags);
+  split.queries.add(Number(/desc="([0-9]+) queries"/.exec(h)?.[1] ?? 0), tags);
+  split.app.add(Math.max(0, total - rl - db), tags);
+  split.outside.add(Math.max(0, res.timings.duration - total), tags);
+}
+
 /** Counts each failed response by kind, tagged with its endpoint. */
 function tally(res, name) {
+  timing(res, name);
   const tags = { name };
   if (res.status === 429) rateLimited.add(1, tags);
   else if (res.status >= 500) serverErrors.add(1, tags);
