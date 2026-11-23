@@ -17,6 +17,8 @@ const ITEMS: NavItem[] = [
   { href: "/dashboard/jobs/new", label: "New job" },
   { href: "/dashboard/pcs", label: "Your PCs" },
   { href: "/dashboard/earnings", label: "Earnings" },
+  { href: "/dashboard/credits", label: "Time-Bank" },
+  { href: "/dashboard/emi", label: "EMI simulator" },
   { href: "/dashboard/account", label: "Account" },
 ];
 

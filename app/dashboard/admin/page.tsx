@@ -5,6 +5,7 @@ import { Badge, Card, Empty, PageTitle, Stat, TableWrap, Td, Th } from "@/compon
 import { adminAudit, adminJobs, adminLedger, adminNodes, adminTotals } from "@/lib/admin";
 import { AuthzError, requireAdmin } from "@/lib/auth/guards";
 import { CLASS_SPECS } from "@/lib/coordinator/classes";
+import { recentFlags } from "@/lib/coordinator/sybil";
 import { WORKLOADS } from "@/lib/coordinator/workloads";
 import { pageContext } from "../data";
 import { ReleaseButton } from "./release-button";
@@ -24,14 +25,16 @@ export default async function AdminPage() {
     if (err instanceof AuthzError) notFound();
     throw err;
   }
-  const [totals, nodeRows, quarantined, jobRows, ledger, auditRows] = await Promise.all([
+  const [totals, nodeRows, quarantined, jobRows, ledger, auditRows, flags] = await Promise.all([
     adminTotals(db),
     adminNodes(db),
     adminNodes(db, true),
     adminJobs(db),
     adminLedger(db),
     adminAudit(db),
+    recentFlags(db),
   ]);
+  const SYBIL_KIND = { upi: "Same payout UPI ID", device: "Same device", subnet: "Same network" } as const;
 
   return (
     <>
@@ -187,6 +190,37 @@ export default async function AdminPage() {
                     <Td>{r.type}</Td>
                     <Td mono>{r.jobId ? shortId(r.jobId) : "-"}</Td>
                     <Td right>{r.unit === "paise" ? rupees(r.amount) : `${r.amount} std GPU-s`}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </TableWrap>
+          )}
+        </Card>
+
+        <Card title="Possible fake accounts">
+          <p className="mb-3 text-sm text-mist">
+            Accounts or PCs that share a payout UPI ID, a device or a network. A flag isn&apos;t proof: hostels, labs and mobile
+            networks share addresses. Checks are never given to a PC on the same account, device or network as the work it checks.
+          </p>
+          {flags.length === 0 ? (
+            <Empty>No flags.</Empty>
+          ) : (
+            <TableWrap label="Flagged accounts">
+              <thead>
+                <tr>
+                  <Th>When</Th>
+                  <Th>What they share</Th>
+                  <Th>Accounts</Th>
+                  <Th>PCs</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {flags.map((f, i) => (
+                  <tr key={i}>
+                    <Td>{when(f.at)}</Td>
+                    <Td>{SYBIL_KIND[f.kind]}</Td>
+                    <Td mono>{f.accounts.map(shortId).join(", ")}</Td>
+                    <Td mono>{f.nodes.length ? f.nodes.map(shortId).join(", ") : "-"}</Td>
                   </tr>
                 ))}
               </tbody>

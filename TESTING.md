@@ -139,17 +139,31 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres npm run t
 - **Live** (`tests/live/agent-preview.ts`, every preview): after the real agent finishes the job, a second real agent on its own node picks up the check, runs the same piece in its own container, and the coordinator compares the two: the job reports 1 matched check and both PCs have trust 520.
 - **E2E** (`tests/e2e/dashboard.spec.ts`): the buyer's job page shows the matched check; the owner's PC shows trust 520 and "1 passed, 0 failed".
 
-**Attack table** (`tests/integration/attacks.test.ts`, one test per attack; plus `tests/unit/challenge.test.ts` and the live test):
+**Phase 7** (Time-Bank, EMI simulator, anti-cheat hardening):
+- **Unit**: `tests/unit/timebank.test.ts` (weighting frozen at 1.0× for every score, credit cost = GPU-seconds + 12% rounded up), `tests/unit/check-rate.test.ts` (50% for the first 20 pieces, falling with trust, never below 10%, back up at low trust; property tests), `tests/unit/emi.test.ts` (textbook EMI, 0% loans, schedule ends at exactly ₹0 and principal adds up for any loan, electricity never counts towards the EMI, payoff months, no-work case), `tests/unit/sybil.test.ts` (/24 and /48 networks, keyed hashes, UPI normalising and masking, who may check whom), `tests/unit/challenge.test.ts` (250 realistic sentences, case-flipped copies instead of all caps).
+- **Integration**: `tests/integration/timebank.test.ts` (credits instead of compute pay, electricity still paid; pending until the check matches or 24 h pass; clawed back when corrected, inconclusive, unverifiable at purge, or on quarantine; spend only verified credits, oldest first; a refused confirm leaves the quote untouched; two racing confirms can't share credits; refund on a missed deadline, once; expiry after 6 months, once; credits never reach the owner ledger; the enum has no cash-out type; append-only), `tests/integration/canary.test.ts` (known-answer canary flow; never sent to the same account; the classifier test).
+- **Real model**: three fallback challenges built from the realistic templates, run through the pinned `text_embeddings` image in Docker: 3 of 3 passed (duplicates and case-flipped copies cosine 1.00000; near > far in every triple, e.g. 0.96 > 0.16).
+- **Live**: the first CI agent earns credits for the job's piece, released when the second agent's check matches; the two accounts on one CI machine are flagged for a shared device and network.
+
+**Attack table** (`tests/integration/attacks.test.ts`, one test per attack, plus the files named):
 
 | Attack | Detected | How fast | Consequence |
 | --- | --- | --- | --- |
-| Random or lazy outputs on a real job | Yes, when the piece is one of the ~10% re-run | When a second (and third) PC has re-run it | Trust 500→250, compute pay for the piece reversed, buyer's piece replaced with the agreed result; pay held until then |
-| Random or lazy answers to a challenge (canary failed) | Yes, every time | On hand-in | Trust −250, no pay, audited; a second failure quarantines (agent refused) |
+| Random or lazy outputs on a real job | Yes, when the piece is re-run (10–50% of a PC's pieces, by trust) | When a second (and third) PC has re-run it | Trust 500→250, compute pay reversed, credits clawed back, buyer's piece replaced with the agreed result; pay held until then |
+| Cheating only while new (or after losing trust) | Yes, far more likely | Half of a new PC's first 20 pieces are re-run | As above; two failures quarantine a new PC |
+| Random or lazy answers to a canary | Yes, every time | Made-up challenge: on hand-in. Known-answer canary: after a tie-break on another PC | Trust −250, audited (`node.canary_failed`); a second failure quarantines |
+| Answering canaries honestly and cheating on real work | Known-answer canaries can't be told apart (classifier at chance, `canary.test.ts`); made-up fallback challenges can | As for any check | As for any check |
 | Slightly wrong outputs (beyond float noise) | Yes, when re-run | As above | As above. Float noise (cosine ≥ 0.995) is accepted by design |
-| Replayed result: another piece's output | Yes | On hand-in (422) | Counted as a failed check (trust −250), piece requeued for another PC |
+| Replayed result: another piece's output | Yes | On hand-in (422) | Counted as a failed check (trust −250), piece requeued |
 | Replayed result: same hand-in twice | Yes | On hand-in (409) | Paid once |
-| Inflated benchmark | Yes: the claim is ignored | Immediately | Score comes only from challenges timed on the coordinator's clock (median of 5, outliers dropped) |
+| Inflated benchmark | Yes: the claim is ignored | Immediately | Score comes only from canaries timed on the coordinator's clock (median of 5, outliers dropped); credits don't use it (1.0×) |
 | Inflated watts | Yes | On the report | Clamped to the class ceiling, audited |
 | Lease hoarding | Yes | On the second lease request ("busy"), and at expiry | Piece requeued; trust −25 per lapsed lease, quarantine below 200 |
-| Many fake nodes on one account | Partly | At lease and check time | 20 PCs per account; same-owner checks wait 30 min and earn no trust |
+| Many fake PCs on one account | Yes | At lease and check time | 20 PCs per account; they never check each other |
+| Fake accounts sharing a payout UPI ID | Yes | When the second account links it | Refused (409), both accounts flagged |
+| Fake accounts on one machine | Yes, unless the agent is modified | On heartbeat | Flagged; never check each other |
+| Fake accounts on one network | Yes (also catches honest hostels: flag only) | On heartbeat / lease | Flagged; never check each other |
+| Earning credits for unverified work | Yes | Credits stay pending until verified | Clawed back if corrected, inconclusive, unverifiable before the purge, or the PC is quarantined first |
+| Spending the same credits twice | Yes | At confirm (row lock) | The second confirm gets 409 `not_enough_credits` (`timebank.test.ts`) |
+| Cashing out credits | Not possible | n/a | No entry type, function or route turns credits into money (`timebank.test.ts`) |
 | Payout held | n/a | While a check is open, or the PC is quarantined | `heldPaise` in `/api/earnings` and on the dashboard |

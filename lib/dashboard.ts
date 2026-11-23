@@ -1,6 +1,6 @@
 import { and, desc, eq, sql, sum } from "drizzle-orm";
 import type { Db } from "@/lib/db/client";
-import { creditLedger, ownerLedger } from "@/lib/db/schema";
+import { creditLedger, ownerLedger, users } from "@/lib/db/schema";
 
 /**
  * Read-only queries for the owner dashboard. Like everything user-facing,
@@ -94,4 +94,10 @@ export async function creditBalance(db: Db, userId: string): Promise<number> {
     .from(creditLedger)
     .where(eq(creditLedger.userId, userId));
   return Number(row?.total ?? 0);
+}
+
+/** The signed-in user's own row (payout UPI ID, masked). */
+export async function getDbUser(db: Db, userId: string) {
+  const [me] = await db.select({ upiMasked: users.upiMasked }).from(users).where(eq(users.id, userId)).limit(1);
+  return me ?? null;
 }

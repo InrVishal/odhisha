@@ -7,11 +7,12 @@ import { cosine } from "./verify";
  * up itself, to catch cheating PCs (a canary) and to time them (the
  * benchmark), without trusting anything the PC says about itself.
  *
- * The sentences are random words, so nobody can look the answers up ahead of
- * time. What makes it a canary is the structure hidden inside, which only a
- * real run of the model produces:
+ * The sentences are made up fresh each time from realistic templates, so
+ * nobody can look the answers up ahead of time. What makes it a canary is the
+ * structure hidden inside, which only a real run of the model produces:
  * - exact duplicates must give the same vector;
- * - an UPPERCASE copy must give the same vector (the model is uncased);
+ * - a copy with its first letter's case flipped must give the same vector
+ *   (the model is uncased);
  * - a sentence must sit closer to itself with a few words added than to an
  *   unrelated sentence.
  * Random vectors fail the duplicates; a constant or hashed vector fails the
@@ -23,7 +24,8 @@ import { cosine } from "./verify";
  * score lower (by stalling) but never higher than it really is.
  */
 
-export const CHALLENGE_ITEMS = 200;
+/** A full text-embedding piece (maxItemsPerFragment), the size most real pieces have. */
+export const CHALLENGE_ITEMS = 250;
 const DUPLICATE_PAIRS = 6;
 const CASE_PAIRS = 6;
 const TRIPLES = 8;
@@ -47,28 +49,117 @@ export const FIRST_CHALLENGE_GAP_SEC = 10 * 60;
 export const CHALLENGE_ONE_IN = 20;
 export const CHALLENGE_MIN_GAP_SEC = 60 * 60;
 
-const WORDS = (
-  "river lamp orange window carpet violin garden pencil mountain ticket ocean candle bridge morning silver " +
-  "rocket market forest teacher bottle engine island letter shadow pocket button tiger camera ladder honey " +
-  "planet basket feather marble jacket kitchen meadow needle orchard parcel quarry ribbon saddle thunder " +
-  "umbrella valley wagon yellow zebra anchor blanket cactus desert empire falcon glacier harbor iceberg jungle " +
-  "kettle lantern mirror nectar oyster pepper quilt rabbit sailor tunnel uniform velvet walnut yogurt bamboo " +
-  "cotton dragon elbow fountain goblet hammer insect jasmine kingdom lemon monkey noodle olive puzzle quartz " +
-  "raven spider tomato utensil village whistle anchor bakery canyon dolphin eagle fabric ginger helmet ivory " +
-  "jigsaw kayak library magnet narrow orbit pillow riddle scooter trumpet vacuum wizard cricket monsoon chutney"
-).split(" ");
+/**
+ * Sentences that read like what buyers send: support tickets, reviews,
+ * notes, searches and product listings, filled in from small word lists.
+ * The templates are public (this file), so a cheater who reads the code can
+ * still recognise them; that's why a re-run of a verified real piece
+ * (canary.ts) is used instead whenever one is available.
+ */
+const SLOTS: Record<string, readonly string[]> = {
+  item: ["phone", "charger", "laptop bag", "mixer grinder", "water bottle", "kurta", "pair of headphones", "router", "pressure cooker", "school bag"],
+  problem: ["damaged", "two days late", "with a part missing", "in the wrong size", "without the bill", "with a cracked lid"],
+  fix: ["refund", "replacement", "return pickup", "copy of the invoice"],
+  status: ["packed", "shipped", "out for delivery", "pending", "on hold"],
+  app: ["banking", "food delivery", "train booking", "college portal", "cab", "grocery"],
+  screen: ["the orders page", "my profile", "the payment screen", "notifications", "the wallet"],
+  plan: ["mobile", "broadband", "streaming", "gym", "cloud storage"],
+  product: ["earbuds", "smartwatch", "ceiling fan", "gas stove", "power bank", "keyboard", "air cooler", "rice cooker", "table lamp"],
+  part: ["strap", "lid", "cable", "remote", "switch", "handle", "charging port"],
+  adj: ["cheap", "loose", "flimsy", "heavy", "a bit stiff", "solid"],
+  usage: ["daily calls", "gaming", "music on the bus", "online classes", "long video calls"],
+  verdict: ["fine", "decent", "not great", "better than I expected", "about average"],
+  price: ["₹1,000", "₹2,500", "₹5,000", "₹15,000", "₹800"],
+  team: ["design", "sales", "hostel committee", "placement", "finance", "support"],
+  day: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+  time: ["10 AM", "2:30 PM", "4 PM", "6 PM", "9:15 AM"],
+  doc: ["fee receipt", "project report", "leave form", "ID proof", "bonafide certificate"],
+  office: ["accounts office", "department office", "warden", "exam cell"],
+  course: ["physics", "chemistry", "computer", "electronics", "biology"],
+  bill: ["electricity", "water", "internet", "phone", "maintenance"],
+  train: ["Rajdhani", "Shatabdi", "Duronto", "Vande Bharat", "Intercity", "Jan Shatabdi"],
+  city: ["Bhubaneswar", "Cuttack", "Puri", "Kolkata", "Hyderabad", "Chennai", "Pune", "Delhi", "Rourkela"],
+  brand: ["Nova", "Orbit", "Kiran", "Sitara", "Vayu", "Prakash"],
+  feature: ["fast charging", "Bluetooth 5.3", "a steel body", "a 2 year warranty", "a timer", "low noise"],
+  color: ["black", "blue", "white", "grey", "green"],
+  size: ["small", "medium", "large", "1.5 L", "20 cm"],
+  num: ["4471", "10293", "88812", "5530", "71204", "3398"],
+  n: ["2", "3", "4", "5", "6", "10"],
+};
+
+/** Templates by kind. A "far" sentence is always of a different kind than its "near" pair. */
+const TEMPLATES: readonly (readonly string[])[] = [
+  [
+    "My {item} arrived {problem}, can I get a {fix}?",
+    "Order {num} still shows {status} after {n} days.",
+    "The {app} app logs me out every time I open {screen}.",
+    "I was charged twice for my {plan} plan this month.",
+    "How do I change the delivery address for order {num}?",
+    "Still waiting for the {fix} on my {item}.",
+  ],
+  [
+    "The {product} works well but the {part} feels {adj}.",
+    "Battery lasts about {n} hours with {usage}, which is {verdict}.",
+    "Good value for {price}, though delivery took {n} days.",
+    "{n} stars, the {part} stopped working after {n} weeks.",
+    "Bought this {product} for {usage} and it is {verdict}.",
+  ],
+  [
+    "Meeting with the {team} team moved to {day} at {time}.",
+    "Submit the {doc} to the {office} before {day}.",
+    "The {course} lab is closed on {day} for maintenance.",
+    "Reminder: pay the {bill} bill by {day}.",
+    "Bring your {doc} for the {team} interview on {day}.",
+  ],
+  [
+    "best {product} under {price} for {usage}",
+    "is the {train} to {city} running late today",
+    "how to reset {app} app password",
+    "{city} weather {day} evening",
+    "{train} timings from {city}",
+  ],
+  [
+    "{brand} {product} with {feature}, {color}, {size}",
+    "{brand} {product}, {color}, pack of {n}",
+    "{color} {product} by {brand} with {feature}",
+  ],
+];
+
+const NEAR_TAILS = ["Please help.", "Thanks.", "Any update?", "This is urgent.", "Again today."];
+
+function fill(rand: (max: number) => number, template: string): string {
+  return template.replace(/\{(\w+)\}/g, (_, k: string) => {
+    const xs = SLOTS[k]!;
+    return xs[rand(xs.length)]!;
+  });
+}
+
+function sentence(rand: (max: number) => number, kind = rand(TEMPLATES.length)): string {
+  const ts = TEMPLATES[kind]!;
+  return fill(rand, ts[rand(ts.length)]!);
+}
+
+/** "Order 4471 ..." → "order 4471 ..."; "is the ..." → "Is the ...". The model is uncased: same vector. */
+function flipFirst(t: string): string {
+  const c = t.charAt(0);
+  return (c === c.toUpperCase() ? c.toLowerCase() : c.toUpperCase()) + t.slice(1);
+}
+
+/** A sentence that starts with a letter, so flipping its case changes it. */
+function letterSentence(rand: (max: number) => number): string {
+  for (;;) {
+    const s = sentence(rand);
+    if (/^[A-Za-z]/.test(s)) return s;
+  }
+}
 
 export interface ChallengeSpec {
   v: 1;
   items: number;
   duplicates: Array<[number, number]>;
   casePairs: Array<[number, number]>;
-  /** [sentence, near (sentence + words), far (unrelated)] */
+  /** [sentence, near (sentence + a few words), far (unrelated)] */
   triples: Array<[number, number, number]>;
-}
-
-function sentence(rand: (max: number) => number, words: number): string {
-  return Array.from({ length: words }, () => WORDS[rand(WORDS.length)]).join(" ");
 }
 
 /** Makes one challenge: the texts to send and the hidden structure to check. */
@@ -79,18 +170,20 @@ export function buildChallenge(rand: (max: number) => number = randomInt): { tex
   const triples: ChallengeSpec["triples"] = [];
   const push = (t: string) => texts.push(t) - 1;
   for (let i = 0; i < DUPLICATE_PAIRS; i++) {
-    const s = sentence(rand, 6 + rand(6));
+    const s = sentence(rand);
     duplicates.push([push(s), push(s)]);
   }
   for (let i = 0; i < CASE_PAIRS; i++) {
-    const s = sentence(rand, 6 + rand(6));
-    casePairs.push([push(s), push(s.toUpperCase())]);
+    const s = letterSentence(rand);
+    casePairs.push([push(s), push(flipFirst(s))]);
   }
   for (let i = 0; i < TRIPLES; i++) {
-    const s = sentence(rand, 8 + rand(4));
-    triples.push([push(s), push(`${s} ${sentence(rand, 2)}`), push(sentence(rand, 8 + rand(4)))]);
+    const kind = rand(TEMPLATES.length);
+    const s = sentence(rand, kind);
+    const other = (kind + 1 + rand(TEMPLATES.length - 1)) % TEMPLATES.length;
+    triples.push([push(s), push(`${s} ${NEAR_TAILS[rand(NEAR_TAILS.length)]}`), push(sentence(rand, other))]);
   }
-  while (texts.length < CHALLENGE_ITEMS) push(sentence(rand, 6 + rand(8)));
+  while (texts.length < CHALLENGE_ITEMS) push(sentence(rand));
 
   // Shuffle so the structure isn't at fixed positions; remap the indexes.
   const order = texts.map((_, i) => i);

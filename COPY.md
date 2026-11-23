@@ -29,12 +29,16 @@ The copy describes the finished prototype. Each phase ticks off what it delivers
 - [x] **Phase 6:** Every job costs at least ₹10; the top-up is shown, and owners are paid the same (proof: `tests/unit/pricing.test.ts (minimum), tests/live/agent-preview.ts (quote)`)
 - [x] **Phase 6:** Speed scores come from NightShift's own timed checks, not from what a PC says about itself (proof: `tests/unit/challenge.test.ts, tests/integration/attacks.test.ts (inflated benchmark), tests/live/agent-preview.ts`)
 - [x] **Phase 6:** About 1 piece in 10 re-run on a second PC; trust scores; bad PCs paused (proof: `tests/unit/verify.test.ts, tests/integration/verification.test.ts, tests/live/agent-preview.ts (second real agent checks the first)`)
-- [ ] **Phase 7:** Only work that passes checks earns Time-Bank credits
-- [ ] **Phase 7:** Time-Bank wallet (demo): earn and spend credits; no cash-out, sale or transfer
-- [ ] **Phase 7:** GPU-on-EMI simulator (demo only, no lending)
+- [x] **Phase 7:** Only verified work earns spendable Time-Bank credits; wrong, unverifiable or quarantined work is clawed back (proof: `tests/integration/timebank.test.ts, tests/live/agent-preview.ts (credits released when the check matched)`)
+- [x] **Phase 7:** Time-Bank wallet (demo): earn and spend credits on jobs; 6-month expiry; no cash-out, sale or transfer (proof: `tests/integration/timebank.test.ts, tests/e2e/dashboard.spec.ts`)
+- [x] **Phase 7:** Credit weighting frozen at 1.0× until the speed scale is calibrated on a real RTX 3060 (proof: `tests/unit/timebank.test.ts, docs/CALIBRATION.md`)
+- [x] **Phase 7:** GPU-on-EMI simulator (demo only, no lending), electricity taken out first (proof: `tests/unit/emi.test.ts, tests/e2e/dashboard.spec.ts`)
+- [x] **Phase 7:** Canaries that look like real work: re-runs of verified real pieces (proof: `tests/integration/canary.test.ts (classifier at chance)`)
+- [x] **Phase 7:** New and low-trust PCs checked on half their pieces (proof: `tests/unit/check-rate.test.ts, tests/integration/attacks.test.ts`)
+- [x] **Phase 7:** One payout UPI ID per account; shared devices and networks flagged and kept from checking each other (proof: `tests/integration/attacks.test.ts, tests/live/agent-preview.ts (flags raised)`)
 - [ ] **Phase 8:** Sentry error reports with personal details removed
 
-Done: 20 of 25.
+Done: 27 of 29.
 
 **Still open from you:** set `CONTACT_EMAIL` in Vercel so the privacy page can show a real address.
 
@@ -256,27 +260,33 @@ _Search description:_ Students lend their GPU at night and earn credits, in stan
 
 # Lend your GPU now, borrow several later
 
-Time-Bank is for students. Your PC works for the network at night and earns credits. Later, you spend them on a short-lived cluster of several GPUs.
+Time-Bank is for students. Your PC works for the network at night and earns credits. Later, you spend them on a job of your own that runs on several GPUs at once.
 
 ### Earning credits
 
-Credits are counted in standard GPU-hours. One standard GPU-hour is one hour of work on an RTX 3060.
+Switch your PC to earn credits in your dashboard. Its pieces of other people's jobs then earn credits instead of pay for GPU time. Your electricity is still paid back in rupees.
 
-Faster GPUs earn more per hour. When your PC joins, the app runs a short benchmark, and your credits are weighted by that score compared with an RTX 3060. For example, a GPU that benchmarks twice as fast earns 2 standard GPU-hours for each hour it works.
+Credits are counted in standard GPU-hours. For now every GPU earns the same: one standard GPU-hour for each hour of verified work. Faster GPUs will earn more once our speed scores are checked against a real RTX 3060.
 
-Your hostel RTX 3060 running from midnight to 6 AM earns 6 standard GPU-hours.
+Your hostel PC running from midnight to 6 AM earns 6 standard GPU-hours.
+
+New credits wait until the work is verified. Either its check matched, or it wasn't picked for a check and a day has passed with your PC in good standing.
 
 ### Spending credits
 
-When you need a lot of compute at once, book a temporary cluster. Spending uses the same weights: for example, 4 RTX 3060-class GPUs for 3 hours during a hackathon cost 12 standard GPU-hours. Faster GPUs in your cluster cost more per hour.
+Pick "Pay with Time-Bank credits" on a quote. Your job's pieces run in parallel on as many GPUs as are free, so a big batch finishes fast. That's your temporary cluster.
 
-Your booking runs on the same approved job types as everyone else's.
+A job costs its GPU-hours plus the 12% verification buffer. For example, a 12 GPU-hour job during a hackathon (4 GPUs for 3 hours) costs 13.44 standard GPU-hours.
+
+Your job runs on the same approved job types as everyone else's.
 
 ### The rules
 
 Credits aren't money. You can't cash them out, sell them or give them to someone else.
 
-One GPU can earn at most 10 standard GPU-hours per hour, however high its benchmark.
+Credits expire 6 months after you earn them. The oldest are spent first.
+
+If work turns out wrong, or its check can't run before the job's data is deleted, its credits are taken back. The same goes for unverified credits of a PC that's quarantined.
 
 In this prototype, credits are tracked in a demo wallet.
 
@@ -358,7 +368,9 @@ This is how the NightShift prototype handles your data. We follow India's Digita
 
 Your email address, to log you in. If you log in with Google, we only ask Google for your email. We don't store your name or photo.
 
-If you're an owner: your PC's GPU model, benchmark score, power draw, online times and earnings.
+If you're an owner: your PC's GPU model, speed score, power draw, online times and earnings, and your payout UPI ID (we keep a scrambled copy to make sure it's on one account only, plus a masked version to show you).
+
+A scrambled (hashed) ID of each PC's device and the network it connects from, so we can spot one person running many fake accounts. We don't store the raw ID or IP.
 
 If you're a buyer: the job settings and files you upload, and your job history.
 
@@ -371,6 +383,8 @@ To log you in, run your jobs, pay owners, keep the network safe, and email you a
 ### Who else sees it
 
 PCs on the network see the piece of a job they work on, in plain form, while they work on it.
+
+To check that PCs are honest, a piece of your job may be run again on one or two other PCs, while your job's data still exists (up to 7 days after it ends).
 
 Our service providers store or process data for us: Vercel (hosting), Neon (database), Upstash (rate limiting), Resend (login emails) and Sentry (error reports, with personal details removed).
 

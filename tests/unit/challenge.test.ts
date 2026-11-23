@@ -28,12 +28,16 @@ function bagOfWords(texts: string[]): number[][] {
 const json = (items: unknown) => Buffer.from(JSON.stringify({ items }));
 
 describe("building a challenge", () => {
-  it("has 200 sentences with the hidden structure in random places", () => {
+  it("has 250 realistic sentences (a full piece) with the hidden structure in random places", () => {
     const { texts, spec } = buildChallenge();
     expect(texts).toHaveLength(CHALLENGE_ITEMS);
     expect(spec.items).toBe(CHALLENGE_ITEMS);
     for (const [a, b] of spec.duplicates) expect(texts[a]).toBe(texts[b]);
-    for (const [a, b] of spec.casePairs) expect(texts[b]).toBe(texts[a]!.toUpperCase());
+    // Same text with the first letter's case flipped.
+    for (const [a, b] of spec.casePairs) expect(texts[b]!.toLowerCase()).toBe(texts[a]!.toLowerCase());
+    for (const [a, b] of spec.casePairs) expect(texts[b]).not.toBe(texts[a]);
+    // No shouting: no all-caps copies, the old tell.
+    expect(texts.filter((t) => t === t.toUpperCase()).length).toBe(0);
     for (const [s, near, far] of spec.triples) {
       expect(texts[near]!.startsWith(`${texts[s]} `)).toBe(true);
       expect(texts[far]).not.toBe(texts[s]);
@@ -46,11 +50,11 @@ describe("building a challenge", () => {
 describe("checking a challenge (the canary)", () => {
   const { texts, spec } = buildChallenge();
 
-  it("passes an honest embedder", () => {
+  it("passes an honest embedder", { timeout: 30_000 }, () => {
     expect(checkChallenge(spec, json(bagOfWords(texts)))).toEqual({ passed: true, failures: [] });
   });
 
-  it("fails random vectors, one constant vector, a per-text hash, and unnormalised output", () => {
+  it("fails random vectors, one constant vector, a per-text hash, and unnormalised output", { timeout: 30_000 }, () => {
     const random = texts.map(() => {
       const v = Array.from({ length: 384 }, () => Math.random() - 0.5);
       const n = Math.hypot(...v);

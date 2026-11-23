@@ -93,8 +93,9 @@ async function main(): Promise<void> {
   log("owner, buyer and admin sessions created in the preview database");
 
   const reg = await api<{ node: { id: string }; token: string }>(owner, "POST", "/api/nodes", { name: "CI runner", gpuClass: "cpu" });
-  await api(owner, "PATCH", `/api/nodes/${reg.node.id}`, { nightWindowStartMin: 0, nightWindowEndMin: 0 });
-  log(`node ${reg.node.id.slice(0, 8)} registered (cpu class, all-day window)`);
+  // Time-Bank: this PC earns credits (not compute pay) for the buyer's piece.
+  await api(owner, "PATCH", `/api/nodes/${reg.node.id}`, { nightWindowStartMin: 0, nightWindowEndMin: 0, earnsCredits: true });
+  log(`node ${reg.node.id.slice(0, 8)} registered (cpu class, all-day window, earns Time-Bank credits)`);
 
   const state = mkdtempSync(path.join(tmpdir(), "ns-agent-"));
   const env = { ...process.env, NIGHTSHIFT_STATE_DIR: state, NIGHTSHIFT_NO_KEYRING: "1", NIGHTSHIFT_VERCEL_BYPASS: BYPASS };
@@ -167,6 +168,14 @@ async function main(): Promise<void> {
     }
     log("PASS: the piece was re-run on a second PC, the results matched, and both PCs' trust went up");
 
+    // Time-Bank: the first PC's piece earned credits, pending until that check matched.
+    const credits = await api<{ wallet: { availableSec: number; pendingSec: number; earnedSec: number }; cashable: boolean; weighting: string }>(owner, "GET", "/api/credits");
+    log(`owner credits: ${JSON.stringify(credits.wallet)} (weighting ${credits.weighting}, cashable=${credits.cashable})`);
+    if (credits.wallet.earnedSec <= 0 || credits.wallet.availableSec !== credits.wallet.earnedSec || credits.wallet.pendingSec !== 0 || credits.cashable) {
+      fail("the checked piece should have earned credits that are now verified and available, and not cashable");
+    }
+    log("PASS: the piece earned Time-Bank credits, released once its check matched");
+
     // Each PC's first piece was a coordinator challenge: a known-answer
     // canary, timed on the coordinator's clock. A real model must pass it.
     const db2 = new pg.Client({ connectionString: DB });
@@ -183,6 +192,19 @@ async function main(): Promise<void> {
       }
       if (samples.rows.length < 2 || canaryFails.rows.length > 0) fail("each real agent should have passed one challenge (canary) and been timed");
       log("PASS: both real agents passed their coordinator challenge (canary) and were timed by the coordinator");
+
+      // Sybil: both agents run on this one CI machine, under two accounts.
+      // The coordinator must notice the shared device and network.
+      const owners = await db2.query<{ id: string }>("select owner_id as id from node where id = any($1)", [ids]);
+      const [o1, o2] = owners.rows.map((r) => r.id);
+      const flags = await db2.query<{ kind: string }>(
+        "select meta->>'kind' as kind from audit_log where action = 'sybil.flagged' and meta->>'accounts' like $1 and meta->>'accounts' like $2",
+        [`%${o1}%`, `%${o2}%`],
+      );
+      const kinds = [...new Set(flags.rows.map((r) => r.kind))].sort();
+      log(`sybil flags for the two CI accounts: ${JSON.stringify(kinds)}`);
+      if (!kinds.includes("device") || !kinds.includes("subnet")) fail("two accounts on one machine should be flagged for the shared device and network");
+      log("PASS: two accounts on one machine were flagged (same device, same network); the check still ran because previews only report (SYBIL_CHECKER_RULES=report)");
     } finally {
       await db2.end();
     }

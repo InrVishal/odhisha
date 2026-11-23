@@ -12,7 +12,17 @@ import { expect, test, type BrowserContext, type Page } from "@playwright/test";
  *   finished a real job, the buyer of that job, and an admin.
  */
 
-const DASHBOARD_PAGES = ["/dashboard", "/dashboard/jobs", "/dashboard/jobs/new", "/dashboard/pcs", "/dashboard/earnings", "/dashboard/account", "/dashboard/admin"];
+const DASHBOARD_PAGES = [
+  "/dashboard",
+  "/dashboard/jobs",
+  "/dashboard/jobs/new",
+  "/dashboard/pcs",
+  "/dashboard/earnings",
+  "/dashboard/credits",
+  "/dashboard/emi",
+  "/dashboard/account",
+  "/dashboard/admin",
+];
 
 test.describe("signed out", () => {
   for (const path of DASHBOARD_PAGES) {
@@ -139,6 +149,9 @@ test.describe("signed in (preview)", () => {
     await expect(pc).toContainText("All day");
     await expect(pc).toContainText("520 / 1000");
     await expect(pc).toContainText("1 passed, 0 failed");
+    // A new PC: half its pieces are re-run. This one earns Time-Bank credits.
+    await expect(pc).toContainText("50% (new PC: 1 of its first 20 pieces done)");
+    await expect(pc).toContainText("Time-Bank credits (electricity still paid in rupees)");
 
     await page.goto("/dashboard/earnings");
     // Every dashboard page says money is simulated.
@@ -147,6 +160,40 @@ test.describe("signed in (preview)", () => {
     await expect(byPc).toContainText("CI runner");
     await expect(page.getByText("Electricity paid back")).toBeVisible();
     await expect(page.getByRole("region", { name: "Every piece your PCs ran" })).toContainText("CI runner");
+
+    // Payout UPI ID: linked once per account, shown masked.
+    await page.getByLabel(/^(UPI ID|Change UPI ID)$/).fill("ci.owner@okaxis");
+    await page.getByRole("button", { name: /^(Link UPI ID|Change)$/ }).click();
+    await expect(page.getByRole("status")).toHaveText("Linked ci•••@okaxis.");
+    await expect(page.getByText("Payout UPI ID: ci•••@okaxis")).toBeVisible();
+  });
+
+  test("owner: the Time-Bank wallet shows the verified credits from the checked piece", async ({ page, context, baseURL }) => {
+    await signIn(context, baseURL, auth!.owner);
+    await page.goto("/dashboard/credits");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Time-Bank");
+    await expect(page.getByText(/Demo mode: payments, UPI payouts and GPU EMI are simulated/)).toBeVisible();
+    const available = page.getByText("Available to spend").locator("..");
+    await expect(available).toContainText(/[1-9][0-9.]* standard GPU-(second|minute|hour)/);
+    await expect(page.getByRole("region", { name: "Time-Bank history" })).toContainText("Earned");
+    await expect(page.getByText(/can.t be cashed out, sold or given to anyone/)).toBeVisible();
+  });
+
+  test("owner: the EMI simulator works out the EMI, takes electricity out first, and says it's a demo", async ({ page, context, baseURL }) => {
+    await signIn(context, baseURL, auth!.owner);
+    await page.goto("/dashboard/emi");
+    await expect(page.getByRole("note")).toContainText("Demo mode: this is a simulator. NightShift doesn't lend money");
+    const result = page.getByRole("region", { name: "Result" });
+    // The defaults: ₹26,000 at 15% for 12 months; 8 h × 30 nights × 50% at ₹25/h, 320 W at ₹9/kWh.
+    await expect(result).toContainText("₹2,346.72");
+    await expect(result).toContainText("₹3,000");
+    await expect(result).toContainText("minus ₹345.60 for electricity");
+    await expect(result).toContainText("127%");
+    await page.getByLabel("Share of those hours with work (%)").fill("0");
+    await expect(result).toContainText("Not within 10 years");
+    await page.getByLabel("Interest (% a year)").fill("abc");
+    // Scoped to the page: the route announcer is an alert too.
+    await expect(page.locator("main#main").getByRole("alert")).toContainText("Interest must be a yearly rate");
   });
 
   test("owner: adds a PC, sees its token once, pauses it and removes it", async ({ page, context, baseURL }, info) => {
@@ -174,15 +221,17 @@ test.describe("signed in (preview)", () => {
     await page.goto("/dashboard");
     await page.getByRole("navigation", { name: "Dashboard" }).getByRole("link", { name: "Admin" }).click();
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("Admin");
-    for (const h of ["Quarantine list", "PCs", "Jobs", "Ledger", "Audit log"]) {
+    for (const h of ["Quarantine list", "PCs", "Jobs", "Ledger", "Possible fake accounts", "Audit log"]) {
       await expect(page.getByRole("heading", { level: 2, name: h })).toBeVisible();
     }
     await expect(page.getByRole("region", { name: "All jobs" })).toContainText(auth!.jobId.slice(0, 8));
     await expect(page.getByRole("region", { name: "Audit log entries" })).toContainText("job.confirmed");
+    // The two CI agents run on one machine under two accounts: flagged.
+    await expect(page.getByRole("region", { name: "Flagged accounts" })).toContainText(/Same device|Same network/);
   });
 
   test("every dashboard page has one h1 and no serious accessibility issues", async ({ page, context, baseURL }) => {
-    test.setTimeout(120_000); // eight pages, each with a full axe scan
+    test.setTimeout(180_000); // ten pages, each with a full axe scan
     await signIn(context, baseURL, auth!.admin);
     for (const path of DASHBOARD_PAGES) {
       await page.goto(path);

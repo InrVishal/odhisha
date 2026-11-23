@@ -41,7 +41,7 @@ function withoutKey<T extends { idempotencyKey: string }>(row: T): Omit<T, "idem
 /** Everything we hold about the account, as plain JSON. */
 export async function exportAccount(db: Db, userId: string, now: Date) {
   const [me] = await db
-    .select({ id: users.id, email: users.email, role: users.role, createdAt: users.createdAt })
+    .select({ id: users.id, email: users.email, role: users.role, payoutUpi: users.upiMasked, createdAt: users.createdAt })
     .from(users)
     .where(and(eq(users.id, userId), isNull(users.deletedAt)))
     .limit(1);
@@ -155,7 +155,7 @@ export async function deleteAccount(
     await tx.delete(sessions).where(eq(sessions.userId, userId));
     await tx.delete(accounts).where(eq(accounts.userId, userId));
     if (me.email) await tx.delete(verificationTokens).where(eq(verificationTokens.identifier, me.email));
-    await tx.update(users).set({ email: null, name: null, image: null, emailVerified: null, deletedAt: ctx.now }).where(eq(users.id, userId));
+    await tx.update(users).set({ email: null, name: null, image: null, emailVerified: null, upiHash: null, upiMasked: null, deletedAt: ctx.now }).where(eq(users.id, userId));
     return { jobsPurged: mine.length, pcsRemoved: pcs.length };
   });
   await audit(db, { actorId: userId, actorType: "user", action: "account.deleted", targetType: "user", targetId: userId, ip: ctx.ip, meta: result }, ctx.ipSecret);

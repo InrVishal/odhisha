@@ -57,6 +57,11 @@ export default async function PcsPage() {
                 />
                 <Item label="Trust score" value={`${n.trustScore} / 1000`} />
                 <Item label="Checks" value={`${n.checksPassed} passed, ${n.checksFailed} failed`} />
+                <Item
+                  label="Share of its pieces we re-run"
+                  value={`${Math.round(n.checkRate * 100)}%${n.piecesDone < 20 ? ` (new PC: ${n.piecesDone} of its first 20 pieces done)` : ""}`}
+                />
+                <Item label="Earns" value={n.earnsCredits ? "Time-Bank credits (electricity still paid in rupees)" : "Rupees"} />
                 <Item label="Night window" value={`${windowText(n.nightWindowStartMin, n.nightWindowEndMin)} (${n.timezone})`} />
                 <Item label="Your rate" value={`${rupees(n.ownerRatePaisePerHr)} per hour`} />
                 <Item label="Your electricity tariff" value={`${rupees(n.tariffPaisePerKwh)} per kWh`} />

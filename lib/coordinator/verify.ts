@@ -33,6 +33,35 @@ export function pickPiecesToVerify(pieces: number, rand: (max: number) => number
   return seqs.slice(0, k).sort((a, b) => a - b);
 }
 
+// ─── How often a PC is checked ─────────────────────────────────────────────
+
+/** A new PC's first this-many pieces are checked at NEW_PC_RATE. */
+export const NEW_PC_PIECES = 20;
+export const NEW_PC_RATE = 0.5;
+/** Trust a PC starts with; at or below it, it's checked at NEW_PC_RATE. */
+export const START_TRUST = 500;
+/** At this trust and above, the rate is down to the floor (VERIFY_RATE). */
+export const TRUSTED_AT = 900;
+
+/**
+ * Share of a PC's pieces that get re-run: 50% for its first 20, then falling
+ * with trust (500 → 50%, 700 → 30%, 900 → 10%), never below 10%. A PC whose
+ * trust drops back to 500 or less is at 50% again.
+ */
+export function checkRate(node: { piecesDone: number; trustScore: number }): number {
+  if (node.piecesDone < NEW_PC_PIECES || node.trustScore <= START_TRUST) return NEW_PC_RATE;
+  const t = Math.min(1, (node.trustScore - START_TRUST) / (TRUSTED_AT - START_TRUST));
+  return Math.max(VERIFY_RATE, NEW_PC_RATE - t * (NEW_PC_RATE - VERIFY_RATE));
+}
+
+/**
+ * Chance that a piece NOT picked at confirm time is checked anyway, so that
+ * the PC's overall rate is checkRate(): picked (≈10%) or extra.
+ */
+export function extraCheckChance(rate: number): number {
+  return Math.max(0, Math.min(1, (rate - VERIFY_RATE) / (1 - VERIFY_RATE)));
+}
+
 // ─── Comparing outputs ─────────────────────────────────────────────────────
 
 /** Cosine similarity two honest runs of the same embedding model always beat. */

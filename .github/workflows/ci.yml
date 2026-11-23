@@ -217,7 +217,7 @@ jobs:
         run: |
           npx --yes vercel@66.5.0 pull --yes --environment=preview --token="$VERCEL_TOKEN"
           npx --yes vercel@66.5.0 build --token="$VERCEL_TOKEN"
-          url=$(npx --yes vercel@66.5.0 deploy --prebuilt --token="$VERCEL_TOKEN" --env DATABASE_URL="$PREVIEW_DATABASE_URL")
+          url=$(npx --yes vercel@66.5.0 deploy --prebuilt --token="$VERCEL_TOKEN" --env DATABASE_URL="$PREVIEW_DATABASE_URL" --env SYBIL_CHECKER_RULES=report)
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "Preview: $url" >> "$GITHUB_STEP_SUMMARY"
 

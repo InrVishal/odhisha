@@ -11,10 +11,10 @@ Writes need a same-origin `Origin` header.
 | Method | Path | Body | Notes |
 | --- | --- | --- | --- |
 | POST | `/api/jobs/quote` | Text jobs: JSON `{ workloadType: "text_embeddings", gpuClass, params, texts: [...] }`. Image jobs: `multipart/form-data` with a `request` field (JSON `{ workloadType, gpuClass, params }`) and `images` files | 201 `{ job }` with price, breakdown and deadline. Held 10 minutes. 503 `no_capacity` if no PC of that class can finish it tonight. Max 5 open quotes. Limited to 30 a minute |
-| POST | `/api/jobs/{id}/confirm` | – | Charges (simulated) and queues the job. 409 `quote_expired` / `not_quoted`. Limited to 10 a minute |
+| POST | `/api/jobs/{id}/confirm` | none, or `{ payWith: "money" \| "credits" }` | Queues the job. `money` (default): charges (simulated). `credits`: spends verified Time-Bank credits (the quote's `creditCost`, oldest-expiring first; 409 `not_enough_credits`). 409 `quote_expired` / `not_quoted`. Limited to 10 a minute |
 | POST | `/api/jobs/{id}/cancel` | – | Only for a quote that hasn't been confirmed. Deletes its data now |
 | GET | `/api/jobs` | – | The buyer's last 50 jobs |
-| GET | `/api/jobs/{id}` | – | Status, progress (`fragmentsDone`, `fragmentsTotal`, `nodesWorking`), `refunded`, `netChargedPaise`, and `checks` (`planned`, `matched`, `corrected`, `inconclusive`, `waiting`): the pieces re-run on a second PC and how that went |
+| GET | `/api/jobs/{id}` | – | Status, progress (`fragmentsDone`, `fragmentsTotal`, `nodesWorking`), `refunded`, `netChargedPaise`, `creditCost` (while quoted: the price in standard GPU-seconds), `creditsSpent` (null when paid in money), and `checks` (`planned`, `matched`, `corrected`, `inconclusive`, `waiting`): the pieces re-run on a second PC and how that went |
 | GET | `/api/jobs/{id}/results` | – | A streamed download (`Content-Disposition: attachment`): `{ jobId, workloadType, items: [...] }`, one item per input, in input order. 409 until the job finishes, 410 after the 7-day purge |
 | GET | `/api/jobs/{id}/invoice` | – | The invoice as a PDF download: the quote breakdown, the charge and, if the deadline was missed, the refund line. 409 `no_invoice` until the quote is confirmed |
 
@@ -34,21 +34,26 @@ Workloads (`lib/coordinator/workloads.ts`):
 | --- | --- | --- | --- |
 | POST | `/api/nodes` | `{ name, gpuClass }` | 201 `{ node, token }`. **The token is shown once.** Up to 20 PCs per owner |
 | GET | `/api/nodes` | – | The owner's PCs, with `available`, `unavailableReason`, `trustScore`, `checksPassed`, `checksFailed` |
-| GET / PATCH | `/api/nodes/{id}` | Any of `name`, `tariffPaisePerKwh`, `ownerRatePaisePerHr`, `nightWindowStartMin`, `nightWindowEndMin` (minutes after midnight; start = end means all day), `timezone`, `paused` | |
+| GET / PATCH | `/api/nodes/{id}` | Any of `name`, `tariffPaisePerKwh`, `ownerRatePaisePerHr`, `nightWindowStartMin`, `nightWindowEndMin` (minutes after midnight; start = end means all day), `timezone`, `paused`, `earnsCredits` | GET also returns `piecesDone` and `checkRate` (the share of its pieces re-run now, 0.1–0.5) |
 | POST | `/api/nodes/{id}/token` | – | New token, shown once. Old ones stop working |
 | DELETE | `/api/nodes/{id}/token` | – | Revoke every token. The agent is locked out, and its work goes back in the queue |
 | GET | `/api/earnings` | – | `computePayPaise`, `powerReimbursementPaise` (its own line), `paidOutPaise`, `balancePaise`, `heldPaise` (pieces waiting for their check, and everything a quarantined PC earned), `availablePaise` |
 
+| GET | `/api/credits` | – | Time-Bank wallet: `availableSec` (verified, unexpired), `pendingSec`, `expiringSoonSec`, `earnedSec`, `spentSec`, `clawedBackSec`, `expiredSec`, `balanceSec`, the last 50 rows, `weighting: "1.0x (frozen)"`, `cashable: false` |
+
 Node management is limited to 20 requests an hour.
+
+**Time-Bank.** A PC with `earnsCredits` earns credits (standard GPU-seconds of the piece, weighting frozen at 1.0×) instead of compute pay for pieces of buyers' jobs; electricity is still paid in rupees, and checks and lost races are paid in rupees. Credits are pending until verified (the check matched, or not picked for a check and 24 h passed with the PC in good standing), clawed back if the piece is corrected, its check is inconclusive, its check can't run before the 7-day purge, or the PC is quarantined first, and expire after 6 months. They can only be spent on jobs; there is no cash-out or transfer endpoint.
 
 ## Account (session cookie)
 
 | Method | Path | Body | Notes |
 | --- | --- | --- | --- |
 | GET | `/api/account/export` | – | Everything stored about the account as a JSON download: account, PCs, jobs, all three ledgers, own activity log. No idempotency keys, IP hashes or token hashes |
+| POST | `/api/account/upi` | `{ upiId }` | Links the payout UPI ID (`name@bank`). One UPI ID per account: 409 `upi_in_use` if another account has it (both are flagged for review). Stored as a keyed hash plus a masked copy. Payouts are simulated |
 | DELETE | `/api/account` | `{ "confirm": "DELETE" }` | Removes the email and every login, revokes every PC token, deletes all stored job data now. Ledger rows stay under the account id. 409 `jobs_running` while a job is queued or running. Clears the session cookie |
 
-Both are limited to 5 requests an hour.
+All three are limited to 5 requests an hour.
 
 ## Admin (session cookie, role `admin` in the database)
 
@@ -66,6 +71,12 @@ Every job costs at least **₹10** (`MIN_JOB_PRICE_PAISE`). A smaller job is top
 - **One piece at a time:** `POST /api/agent/lease` answers `{ task: null, reason: "busy" }` while the PC holds an unexpired lease. A lease that runs out costs the PC 25 trust.
 - **Replays:** handing in output that already belongs to a different piece is refused with 422 `replayed_output`, and counts as a failed check.
 - **Watts:** reports above the class ceiling (CPU 150 W, RTX 3060 450 W, RTX 4070 550 W, RTX 4090 900 W) are clamped and audited (`node.watts_clamped`).
+
+## Canaries, checking rates and fake accounts
+
+- **Known-answer canaries:** once pieces exist that two PCs of different owners agreed on, a canary is a re-run of one of them, sent to a third PC as an ordinary check (same input, item count, workload, parameters and lease length as real work). A disagreement goes to a tie-break on another PC before anyone is blamed. The made-up challenges above are only used when no such piece is available.
+- **Checking rate per PC:** 50% of a new PC's first 20 pieces; then falling with trust (500 → 50%, 700 → 30%, 900 → 10%), never below 10%; back to 50% at trust 500 or less. Pieces picked at confirm time (about 10%, at least one per job) are always checked; the rest get the extra chance that brings the PC to its rate.
+- **Sybil rules:** the agent's heartbeat may carry `deviceId` (64 hex: a salted hash of the machine ID). The coordinator stores a keyed hash of it and of the network each PC calls from (/24 or /48). PCs on different accounts sharing either are flagged (`sybil.flagged` in the audit log, shown in the admin panel). A check is never given to a PC on the same account, device or network as any PC that ran the piece. Preview deployments set `SYBIL_CHECKER_RULES=report` (flag only, since CI's test agents share one machine); production refuses that setting.
 
 ## Verification
 

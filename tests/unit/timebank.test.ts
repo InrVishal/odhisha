@@ -4,8 +4,12 @@ import {
   BASELINE_BENCHMARK_SCORE,
   clusterCostStandardSeconds,
   costStandardSeconds,
+  CREDIT_WEIGHTING_FROZEN,
+  creditCost,
+  creditWeightScore,
   earnedStandardSeconds,
   effectiveBenchmark,
+  formatCredits,
   formatStandardHours,
   MAX_BENCHMARK_SCORE,
   MAX_GPU_SECONDS,
@@ -14,101 +18,82 @@ import {
 
 const HOUR = 3600;
 
-describe("weighting by benchmark, relative to an RTX 3060", () => {
-  it("the baseline RTX 3060 earns 1 standard GPU-hour per hour", () => {
+describe("weighting is frozen at 1.0× until speed scores are calibrated", () => {
+  it("is frozen", () => {
+    expect(CREDIT_WEIGHTING_FROZEN).toBe(true);
+  });
+
+  it("every PC earns one standard GPU-hour per verified hour, however fast it is (or claims to be)", () => {
     expect(BASELINE_BENCHMARK_SCORE).toBe(1000);
-    expect(earnedStandardSeconds(HOUR, 1000)).toBe(HOUR);
-    // The copy's example: midnight to 6 AM on a hostel RTX 3060.
+    for (const score of [0, 1, 33, 500, 1000, 2000, 3150, MAX_BENCHMARK_SCORE, 1_000_000]) {
+      expect(earnedStandardSeconds(HOUR, score)).toBe(HOUR);
+      expect(costStandardSeconds(HOUR, score)).toBe(HOUR);
+      expect(creditWeightScore(score)).toBe(BASELINE_BENCHMARK_SCORE);
+    }
+    // The copy's example: midnight to 6 AM.
     expect(formatStandardHours(earnedStandardSeconds(6 * HOUR, 1000))).toBe("6 standard GPU-hours");
   });
 
-  it("a GPU twice as fast earns twice as much", () => {
-    expect(earnedStandardSeconds(HOUR, 2000)).toBe(2 * HOUR);
-    expect(earnedStandardSeconds(HOUR, 3150)).toBe(3.15 * HOUR);
+  it("property: earned = GPU-seconds, for any speed score", () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 0, max: MAX_GPU_SECONDS }), fc.integer({ min: 0, max: 10 * MAX_BENCHMARK_SCORE }), (s, b) => {
+        expect(earnedStandardSeconds(s, b)).toBe(s);
+        expect(costStandardSeconds(s, b)).toBe(s);
+      }),
+      { numRuns: 2000 },
+    );
   });
 
-  it("a slower GPU earns less", () => {
-    expect(earnedStandardSeconds(HOUR, 500)).toBe(HOUR / 2);
-    expect(earnedStandardSeconds(HOUR, 250)).toBe(900);
-  });
-
-  it("spending uses the same weights: 4 RTX 3060s for 3 hours cost 12 standard GPU-hours", () => {
+  it("a cluster costs GPUs × hours", () => {
     expect(clusterCostStandardSeconds([1000, 1000, 1000, 1000], 3 * HOUR)).toBe(12 * HOUR);
-    expect(formatStandardHours(clusterCostStandardSeconds([1000, 1000, 1000, 1000], 3 * HOUR))).toBe("12 standard GPU-hours");
+    expect(clusterCostStandardSeconds([500, 4000], HOUR)).toBe(2 * HOUR);
   });
 
-  it("faster GPUs in a cluster cost more per hour", () => {
-    expect(clusterCostStandardSeconds([1000, 2000], HOUR)).toBe(3 * HOUR);
+  it("the weight cap still applies to the score itself (used again once unfrozen)", () => {
+    expect(effectiveBenchmark(1_000_000)).toBe(MAX_BENCHMARK_SCORE);
+    expect(effectiveBenchmark(0)).toBe(1);
   });
 });
 
-describe("rounding never creates credit", () => {
-  it("earning rounds down and spending rounds up", () => {
-    // 1 second at 1.5× = 1.5 standard seconds
-    expect(earnedStandardSeconds(1, 1500)).toBe(1);
-    expect(costStandardSeconds(1, 1500)).toBe(2);
+describe("what a job costs in credits", () => {
+  it("its GPU-seconds plus the 12% verification buffer, rounded up", () => {
+    expect(creditCost([12 * HOUR])).toBe(48_384);
+    expect(formatStandardHours(creditCost([4 * 3 * HOUR]))).toBe("13.44 standard GPU-hours");
+    expect(creditCost([1])).toBe(2);
+    expect(creditCost([100, 200, 300])).toBe(672);
   });
 
-  const secondsArb = fc.integer({ min: 0, max: MAX_GPU_SECONDS });
-  const scoreArb = fc.integer({ min: 1, max: MAX_BENCHMARK_SCORE });
-
-  it("earned ≤ exact weighted time < earned + 1", () => {
+  it("property: never less than the work it buys, never more than 12% + 1 second over", () => {
     fc.assert(
-      fc.property(secondsArb, scoreArb, (s, b) => {
-        const earned = earnedStandardSeconds(s, b);
-        const exactTimes1000 = s * b; // exact value × 1000
-        expect(earned * 1000).toBeLessThanOrEqual(exactTimes1000);
-        expect((earned + 1) * 1000).toBeGreaterThan(exactTimes1000);
-      }),
-      { numRuns: 2000 },
-    );
-  });
-
-  it("using a node for as long as it worked never costs less than it earned", () => {
-    fc.assert(
-      fc.property(secondsArb, scoreArb, (s, b) => {
-        const cost = costStandardSeconds(s, b);
-        const earned = earnedStandardSeconds(s, b);
-        expect(cost).toBeGreaterThanOrEqual(earned);
-        expect(cost - earned).toBeLessThanOrEqual(1);
-      }),
-      { numRuns: 2000 },
-    );
-  });
-
-  it("splitting work into pieces never earns more than doing it in one go", () => {
-    fc.assert(
-      fc.property(fc.array(fc.integer({ min: 0, max: 10_000 }), { minLength: 1, maxLength: 50 }), scoreArb, (pieces, b) => {
-        const split = pieces.reduce((sum, s) => sum + earnedStandardSeconds(s, b), 0);
-        const whole = earnedStandardSeconds(pieces.reduce((a, c) => a + c, 0), b);
-        expect(split).toBeLessThanOrEqual(whole);
+      fc.property(fc.array(fc.integer({ min: 1, max: 100_000 }), { minLength: 1, maxLength: 40 }), (pieces) => {
+        const total = pieces.reduce((a, b) => a + b, 0);
+        const cost = creditCost(pieces);
+        expect(cost).toBeGreaterThanOrEqual(total);
+        expect(cost).toBeLessThanOrEqual(Math.ceil(total * 1.12) + 1);
       }),
       { numRuns: 1000 },
     );
   });
+});
 
-  it("a faster benchmark never earns less", () => {
+describe("rounding never creates credit", () => {
+  it("splitting work into pieces never earns more than doing it in one go", () => {
     fc.assert(
-      fc.property(secondsArb, scoreArb, scoreArb, (s, b1, b2) => {
-        const [lo, hi] = b1 <= b2 ? [b1, b2] : [b2, b1];
-        expect(earnedStandardSeconds(s, hi)).toBeGreaterThanOrEqual(earnedStandardSeconds(s, lo));
-      }),
+      fc.property(
+        fc.array(fc.integer({ min: 0, max: 10_000 }), { minLength: 1, maxLength: 50 }),
+        fc.integer({ min: 1, max: MAX_BENCHMARK_SCORE }),
+        (pieces, b) => {
+          const split = pieces.reduce((sum, s) => sum + earnedStandardSeconds(s, b), 0);
+          const whole = earnedStandardSeconds(pieces.reduce((a, c) => a + c, 0), b);
+          expect(split).toBeLessThanOrEqual(whole);
+        },
+      ),
       { numRuns: 1000 },
     );
   });
 });
 
 describe("limits", () => {
-  it("caps the weight at 10× an RTX 3060, so an inflated benchmark can't mint unlimited credit", () => {
-    expect(effectiveBenchmark(1_000_000)).toBe(MAX_BENCHMARK_SCORE);
-    expect(earnedStandardSeconds(HOUR, 1_000_000)).toBe(10 * HOUR);
-  });
-
-  it("treats a zero benchmark as the minimum weight, not as zero or an error", () => {
-    expect(effectiveBenchmark(0)).toBe(1);
-    expect(earnedStandardSeconds(HOUR, 0)).toBe(3); // 3600 × 1/1000, rounded down
-  });
-
   it.each([
     ["negative seconds", () => earnedStandardSeconds(-1, 1000)],
     ["fractional seconds", () => earnedStandardSeconds(1.5, 1000)],
@@ -120,6 +105,15 @@ describe("limits", () => {
     ["negative format", () => formatStandardHours(-1)],
   ])("rejects %s", (_name, fn) => {
     expect(fn).toThrow(TimeBankInputError);
+  });
+
+  it("formats small balances without rounding them to 0", () => {
+    expect(formatCredits(0)).toBe("0 standard GPU-hours");
+    expect(formatCredits(1)).toBe("1 standard GPU-second");
+    expect(formatCredits(31)).toBe("31 standard GPU-seconds");
+    expect(formatCredits(60)).toBe("1 standard GPU-minute");
+    expect(formatCredits(754)).toBe("12 standard GPU-minutes");
+    expect(formatCredits(5400)).toBe("1.5 standard GPU-hours");
   });
 
   it("formats hours readably", () => {

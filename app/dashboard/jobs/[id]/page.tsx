@@ -5,6 +5,8 @@ import { JOB_STATUS, rupees, shortId, when } from "@/components/dashboard/format
 import { Badge, buttonClass, Card, PageTitle, secondaryButtonClass, Stat } from "@/components/dashboard/ui";
 import { CLASS_SPECS } from "@/lib/coordinator/classes";
 import { getJob } from "@/lib/coordinator/jobs";
+import { creditWallet } from "@/lib/credits";
+import { formatCredits } from "@/lib/timebank";
 import { WORKLOADS } from "@/lib/coordinator/workloads";
 import { orNotFound, pageContext, tickQuietly } from "../../data";
 import { statusTone } from "../status";
@@ -23,6 +25,8 @@ export default async function JobPage({ params }: PageProps<"/dashboard/jobs/[id
   const pct = p.fragmentsTotal ? Math.round((p.fragmentsDone / p.fragmentsTotal) * 100) : 0;
   const quoteOpen = job.status === "quoted" && new Date(job.quoteExpiresAt) > now;
   const inProgress = job.status === "queued" || job.status === "running";
+  const wallet = quoteOpen && job.creditCost ? await creditWallet(db, user.id, now) : null;
+  const paidWithCredits = job.creditsSpent !== null;
 
   return (
     <>
@@ -59,7 +63,18 @@ export default async function JobPage({ params }: PageProps<"/dashboard/jobs/[id
                 <strong className="text-lavender">{when(job.deadlineAt)}</strong>. Held until {when(job.quoteExpiresAt)}. If we
                 miss the finish time, you get the full price back automatically.
               </p>
-              <QuoteActions jobId={job.id} />
+              <QuoteActions
+                jobId={job.id}
+                credits={
+                  wallet && job.creditCost
+                    ? {
+                        cost: formatCredits(job.creditCost),
+                        enough: wallet.availableSec >= job.creditCost,
+                        available: formatCredits(Math.max(0, wallet.availableSec)),
+                      }
+                    : undefined
+                }
+              />
             </>
           ) : (
             <p className="text-mist">
@@ -127,8 +142,14 @@ export default async function JobPage({ params }: PageProps<"/dashboard/jobs/[id
         <Card title="Payments">
           <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-2 text-sm">
             <dt className="text-mist">Charged</dt>
-            <dd className="text-right text-lavender">{job.confirmedAt ? rupees(job.pricePaise) : rupees(0)}</dd>
-            {job.refunded ? (
+            <dd className="text-right text-lavender">{job.confirmedAt && !paidWithCredits ? rupees(job.pricePaise) : rupees(0)}</dd>
+            {paidWithCredits ? (
+              <>
+                <dt className="text-mist">Paid with Time-Bank credits</dt>
+                <dd className="text-right text-lavender">{formatCredits(job.creditsSpent ?? 0)}</dd>
+              </>
+            ) : null}
+            {job.refunded && !paidWithCredits ? (
               <>
                 <dt className="text-mist">Refund (deadline missed or job couldn&apos;t finish)</dt>
                 <dd className="text-right text-lavender">{rupees(-job.pricePaise)}</dd>
@@ -138,7 +159,11 @@ export default async function JobPage({ params }: PageProps<"/dashboard/jobs/[id
             <dd className="border-t border-navy pt-2 text-right font-semibold text-lavender">{rupees(job.netChargedPaise)}</dd>
           </dl>
           {job.refunded ? (
-            <p className="mt-3 text-sm text-mist">We didn&apos;t finish in time, so the whole price went back to you. You pay ₹0.</p>
+            <p className="mt-3 text-sm text-mist">
+              {paidWithCredits
+                ? "We didn't finish in time, so your credits went back to your Time-Bank wallet."
+                : "We didn't finish in time, so the whole price went back to you. You pay ₹0."}
+            </p>
           ) : null}
           {job.purged ? <p className="mt-3 text-sm text-mist">This job&apos;s data was deleted after 7 days, as promised.</p> : null}
           {job.resultsAvailable ? (
