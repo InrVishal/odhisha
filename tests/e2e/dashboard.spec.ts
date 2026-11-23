@@ -212,7 +212,7 @@ test.describe("signed in (preview)", () => {
     await expect(page.getByRole("region", { name: "Every piece your PCs ran" })).toContainText("CI runner");
 
     // Payout UPI ID: linked once per account, shown masked.
-    await page.getByLabel(/^(UPI ID|Change UPI ID)$/).fill("ci.owner@okaxis");
+    await page.getByLabel(/^(UPI ID|Change UPI ID)$/).fill(`ci.owner.${Date.now()}@okaxis`); // unique: the preview branch (and its accounts) outlives one run, and one UPI ID belongs to one account
     await page.getByRole("button", { name: /^(Link UPI ID|Change)$/ }).click();
     await expect(page.getByRole("status")).toHaveText("Linked ci•••@okaxis.");
     await expect(page.getByText("Payout UPI ID: ci•••@okaxis")).toBeVisible();
