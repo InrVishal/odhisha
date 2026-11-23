@@ -88,6 +88,7 @@ const split = {
   queries: new Trend("split_db_queries"),
   app: new Trend("split_app_ms", true),
   outside: new Trend("split_outside_function_ms", true),
+  total: new Trend("split_function_total_ms", true),
 };
 if (__ENV.SERVER_TIMING === "1") {
   for (const name of ENDPOINTS) for (const m of Object.values(split)) options.thresholds[`${m.name}{name:${name}}`] = ["p(50)>=0"];
@@ -104,6 +105,7 @@ function timing(res, name) {
   split.queries.add(Number(/desc="([0-9]+) queries"/.exec(h)?.[1] ?? 0), tags);
   split.app.add(Math.max(0, total - rl - db), tags);
   split.outside.add(Math.max(0, res.timings.duration - total), tags);
+  split.total.add(total, tags);
 }
 
 /** Counts each failed response by kind, tagged with its endpoint. */

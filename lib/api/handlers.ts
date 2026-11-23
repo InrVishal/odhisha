@@ -21,7 +21,7 @@ import type { LimitResult, PolicyName } from "@/lib/ratelimit";
 import { sniffImageType } from "@/lib/security/filetype";
 import type { CoordinatorKeys } from "@/lib/security/keys";
 import { keyId, publicKeyPem } from "@/lib/security/signing";
-import { clientIp, isAuthorizedCron } from "@/lib/security/tokens";
+import { clientIp, hashToken, isAuthorizedCron } from "@/lib/security/tokens";
 import { errorJson, handle, json, rateLimited, readBody, readJson } from "./http";
 
 /**
@@ -438,16 +438,22 @@ export function releaseNodeHandler(req: Request, d: UserDeps, nodeId: string): P
 // ─── Agent ─────────────────────────────────────────────────────────────────
 
 async function agentAuth(req: Request, d: Deps) {
-  // Per-IP limit first, so token guessing is throttled before any DB lookup.
-  const ipLimited = await limitOr429(d, "agentIp", clientIp(req.headers));
+  // Both limits before any DB lookup (so token guessing is throttled first),
+  // and checked at once (one round trip to the limiter, not two): per IP, and
+  // per token (keyed by the token's hash; one token per PC, so this is the
+  // per-PC limit, and it needs no lookup to know whose it is).
+  const authorization = req.headers.get("authorization");
+  const [ipLimited, tokenLimited] = await Promise.all([
+    limitOr429(d, "agentIp", clientIp(req.headers)),
+    limitOr429(d, "agentNode", `token:${hashToken(authorization ?? "")}`),
+  ]);
   if (ipLimited) return { error: ipLimited };
-  const authed = await authenticateAgent(d.db, req.headers.get("authorization"), d.now());
+  if (tokenLimited) return { error: tokenLimited };
+  const authed = await authenticateAgent(d.db, authorization, d.now());
   if (!authed) return { error: errorJson(401, "bad_token", "Unknown or revoked node token.", { "WWW-Authenticate": "Bearer" }) };
   if (authed.node.status === "quarantined") {
     return { error: errorJson(403, "quarantined", "This PC is paused by NightShift after failed checks.") };
   }
-  const nodeLimited = await limitOr429(d, "agentNode", authed.node.id);
-  if (nodeLimited) return { error: nodeLimited };
   return { node: authed.node };
 }
 

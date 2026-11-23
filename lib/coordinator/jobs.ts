@@ -323,14 +323,20 @@ export async function cancelQuote(ctx: Ctx, jobId: string): Promise<PublicJob> {
 }
 
 async function toPublicJob(db: Db, job: typeof jobs.$inferSelect): Promise<PublicJob> {
-  const [{ done } = { done: 0 }] = await db
-    .select({ done: countDistinct(fragments.seq) })
-    .from(fragments)
-    .where(and(eq(fragments.jobId, job.id), eq(fragments.status, "done"), inArray(fragments.kind, ["primary", "backup"])));
-  const [{ working } = { working: 0 }] = await db
-    .select({ working: countDistinct(fragments.leaseNodeId) })
-    .from(fragments)
-    .where(and(eq(fragments.jobId, job.id), eq(fragments.status, "leased")));
+  // Independent reads, asked at once: one database round trip instead of six.
+  const [[{ done } = { done: 0 }], [{ working } = { working: 0 }], netChargedPaise, creditCost, checks] = await Promise.all([
+    db
+      .select({ done: countDistinct(fragments.seq) })
+      .from(fragments)
+      .where(and(eq(fragments.jobId, job.id), eq(fragments.status, "done"), inArray(fragments.kind, ["primary", "backup"]))),
+    db
+      .select({ working: countDistinct(fragments.leaseNodeId) })
+      .from(fragments)
+      .where(and(eq(fragments.jobId, job.id), eq(fragments.status, "leased"))),
+    jobNetCharge(db, job.buyerId, job.id),
+    job.status === "quoted" ? jobCreditCost(db, job.id) : Promise.resolve(null),
+    checksAndCovers(db, job.id),
+  ]);
   const finished = Boolean(job.completedAt);
   return {
     id: job.id,
@@ -345,11 +351,11 @@ async function toPublicJob(db: Db, job: typeof jobs.$inferSelect): Promise<Publi
     confirmedAt: job.confirmedAt?.toISOString() ?? null,
     completedAt: job.completedAt?.toISOString() ?? null,
     refunded: Boolean(job.refundedAt),
-    netChargedPaise: await jobNetCharge(db, job.buyerId, job.id),
+    netChargedPaise,
     creditsSpent: job.creditsSpent,
-    creditCost: job.status === "quoted" ? await jobCreditCost(db, job.id) : null,
+    creditCost,
     progress: { fragmentsDone: done, fragmentsTotal: job.fragmentCount, nodesWorking: working },
-    ...(await checksAndCovers(db, job.id)),
+    ...checks,
     canaryReuse: job.canaryReuse,
     resultsAvailable: finished && !job.purgedAt,
     purged: Boolean(job.purgedAt),

@@ -313,12 +313,16 @@ describe("rate limits", () => {
     }
   });
 
-  it("limits agents per IP before looking up the token", async () => {
+  it("limits agents per IP and per token before looking up the token", async () => {
     h.limiter.calls = [];
     h.limiter.deny.add("agentIp");
-    await beat(h, "nsn_" + "A".repeat(43));
+    // An unknown token: if the lookup ran first, this would be a 401, not a 429.
+    const r = await beat(h, "nsn_" + "A".repeat(43));
     h.limiter.deny.delete("agentIp");
-    expect(h.limiter.calls.map((c) => c[0])).toEqual(["agentIp"]);
+    expect(r.status).toBe(429);
+    expect(h.limiter.calls.map((c) => c[0]).sort()).toEqual(["agentIp", "agentNode"]);
+    // The per-token key is the token's hash, never the token itself.
+    expect(h.limiter.calls.find((c) => c[0] === "agentNode")?.[1]).toMatch(/^token:[0-9a-f]{64}$/);
   });
 });
 

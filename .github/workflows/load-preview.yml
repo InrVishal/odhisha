@@ -103,6 +103,11 @@ jobs:
             *) echo "refusing: not a preview deployment URL"; exit 1 ;;
           esac
 
+      - name: The network alone, runner to preview (edge reached, time to first byte for a cached static file and for a one-query function)
+        env:
+          TARGET: ${{ steps.deploy.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: bash tools/load/network.sh
       - name: k6
         env: { K6_VERSION: "2.3.0" }
         run: |

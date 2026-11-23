@@ -15,7 +15,7 @@ import { CoordinatorError } from "./errors";
 import { cancelSiblings, completeJobIfDone, failJobIfPieceDead, type Q } from "./lifecycle";
 import { queueCheckIfPicked, resolveCheck, applyCheck } from "./verification";
 import { wantsChallenge } from "./challenge";
-import { createChallenge, lastChallengeAt, settleChallenge, type StoredChallenge } from "./challenge-db";
+import { createChallenge, settleChallenge, type StoredChallenge } from "./challenge-db";
 import { createKnownAnswerCanary } from "./canary";
 import { CANARY_ONLY_RATE, owesCanary, settleCovers } from "./canary-only";
 import { deviceHash, mayCheck, pieceOrigins, recordOrigin, subnetHash, type SybilMode } from "./sybil";
@@ -177,12 +177,18 @@ export async function leaseFragment(
   if (reason) return { lease: null, reason };
 
   // One piece at a time. A PC can't sit on a pile of leases (hoarding):
-  // the agent runs one container at a time anyway.
-  const holding = await db
-    .select({ id: fragments.id })
-    .from(fragments)
-    .where(and(eq(fragments.leaseNodeId, node.id), eq(fragments.status, "leased"), gt(fragments.leaseExpiresAt, now)))
-    .limit(1);
+  // the agent runs one container at a time anyway. Asked together with
+  // "does it owe a canary" (independent), so one database round trip, not two.
+  const [holding, owed] = await Promise.all([
+    db
+      .select({ id: fragments.id })
+      .from(fragments)
+      .where(and(eq(fragments.leaseNodeId, node.id), eq(fragments.status, "leased"), gt(fragments.leaseExpiresAt, now)))
+      .limit(1),
+    // Canary-only verification (canary-only.ts): while this PC has pieces no
+    // independent PC could check, 30% of its leases are canaries.
+    opts.challenges ? owesCanary(db, node.id) : Promise.resolve(false),
+  ]);
   if (holding.length) return { lease: null, reason: "busy" };
 
   // A re-run of a verified real piece if there is one; a made-up challenge otherwise.
@@ -190,12 +196,9 @@ export async function leaseFragment(
     const { fragment, job } = (await createKnownAnswerCanary(db, fresh!, now, mode)) ?? (await createChallenge(db, fresh!, now, keys.dataKey, opts.rand));
     return { lease: await signLease(db, node, fragment, job, keys, now), reason: null };
   };
-  // Canary-only verification (canary-only.ts): while this PC has pieces no
-  // independent PC could check, 30% of its leases are canaries.
-  const owed = opts.challenges ? await owesCanary(db, node.id) : false;
   const coverRand = opts.coverRand ?? (() => randomInt(1_000_000_000) / 1_000_000_000);
   if (opts.challenges) {
-    if (wantsChallenge({ measured: fresh!.benchmarkScore !== null, lastChallengeAt: await lastChallengeAt(db, node.id), now, rand: opts.rand })) return sendCanary();
+    if (wantsChallenge({ measured: fresh!.benchmarkScore !== null, lastChallengeAt: fresh!.lastCanaryAt, now, rand: opts.rand })) return sendCanary();
     if (owed && coverRand() < CANARY_ONLY_RATE) return sendCanary();
   }
 
