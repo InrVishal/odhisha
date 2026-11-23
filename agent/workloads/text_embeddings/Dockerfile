@@ -14,5 +14,8 @@ RUN HF_HUB_OFFLINE=0 python -c "from huggingface_hub import snapshot_download as
 COPY app.py /app/app.py
 LABEL org.opencontainers.image.source="https://github.com/InrVishal/odhisha"
 LABEL org.opencontainers.image.description="NightShift text_embeddings workload"
+# Nothing here builds packages at run time: drop the build tools (setuptools vendors old
+# copies of wheel and jaraco.context with known CVEs; Trivy checks every image).
+RUN pip uninstall -y setuptools wheel
 USER 65534:65534
 ENTRYPOINT ["python", "/app/app.py"]
