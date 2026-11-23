@@ -310,7 +310,16 @@ jobs:
           ADMIN_URL: postgres://postgres:postgres@localhost:5432/postgres
         run: |
           bash tools/load/prepare-db.sh 200 load-seed.json
-          bash tools/load/run.sh 3 k6-summary.json
+          # Where the time goes (CPU per process, what Postgres waits on), printed after k6.
+          node tools/load/sample.mjs 150 40 > load-sample.txt 2>&1 &
+          SAMPLER=$!
+          status=0
+          bash tools/load/run.sh 3 k6-summary.json || status=$?
+          wait "$SAMPLER" || true
+          cat load-sample.txt
+          echo "server errors (any process):"
+          grep -h -i -E "error|⨯" load-server-*.log | sed -E 's/[0-9a-f]{8}-[0-9a-f-]{27}/<id>/g' | sort | uniq -c | sort -rn | head -20 || true
+          exit "$status"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with: { name: k6-summary, path: "k6-summary*.json", retention-days: 14 }

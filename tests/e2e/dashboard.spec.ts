@@ -193,8 +193,12 @@ test.describe("signed in (preview)", () => {
     await expect(pc).toContainText("Speed, measured by NightShift");
     await expect(pc).toContainText("(shown only, not used)");
     await expect(pc).toContainText("All day");
-    await expect(pc).toContainText("520 / 1000");
-    await expect(pc).toContainText("1 passed, 0 failed");
+    // Its cross-check passed, and maybe a known-answer canary sent at random
+    // (as in production): +20 trust from 500 per pass, nothing failed.
+    const text = await pc.innerText();
+    const passed = Number(/(\d+) passed, 0 failed/.exec(text)?.[1] ?? 0);
+    expect(passed).toBeGreaterThanOrEqual(1);
+    expect(text).toContain(`${500 + 20 * passed} / 1000`);
     // A new PC: half its pieces are re-run. This one earns Time-Bank credits.
     await expect(pc).toContainText("50% (new PC: 1 of its first 20 pieces done)");
     await expect(pc).toContainText("Time-Bank credits (electricity still paid in rupees)");
