@@ -30,7 +30,14 @@ function isNeonHost(url: string): boolean {
  *   transactions, which the ledger and leasing code need).
  * - anything else → node-postgres (CI uses a Postgres service container).
  */
-export async function createDb(url: string): Promise<DbHandle> {
+export interface PoolOptions {
+  /** Connections per pool (default 10). Tests use a few, so many test databases fit in one server. */
+  max?: number;
+  /** Close idle connections after this many ms (default 10 s). */
+  idleTimeoutMillis?: number;
+}
+
+export async function createDb(url: string, pool: PoolOptions = {}): Promise<DbHandle> {
   if (url.startsWith("pglite:")) {
     const { PGlite } = await import("@electric-sql/pglite");
     const { drizzle } = await import("drizzle-orm/pglite");
@@ -54,8 +61,13 @@ export async function createDb(url: string): Promise<DbHandle> {
   const { drizzle } = await import("drizzle-orm/node-postgres");
   // sslmode=verify-full: the server's certificate and host name are checked.
   const verifyFull = new URL(url).searchParams.get("sslmode") === "verify-full";
-  const pool = new Pool({ connectionString: url, max: 10, ...(verifyFull ? { ssl: { rejectUnauthorized: true } } : {}) });
-  return { db: drizzle(pool, { schema }) as unknown as Db, driver: "pg", close: () => pool.end() };
+  const pg = new Pool({
+    connectionString: url,
+    max: pool.max ?? 10,
+    idleTimeoutMillis: pool.idleTimeoutMillis ?? 10_000,
+    ...(verifyFull ? { ssl: { rejectUnauthorized: true } } : {}),
+  });
+  return { db: drizzle(pg, { schema }) as unknown as Db, driver: "pg", close: () => pg.end() };
 }
 
 /** Applies every migration in ./drizzle using the driver-matched migrator. */

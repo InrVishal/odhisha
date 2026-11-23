@@ -72,7 +72,9 @@ export async function freshDb(opts: { role?: "app_runtime" | "owner" } = {}): Pr
 
   const url = new URL(serverUrl);
   url.pathname = `/${name}`;
-  const owner = await createDb(url.toString());
+  // Small pools that let idle connections go: some files make a database per test.
+  const POOL = { max: 4, idleTimeoutMillis: 500 };
+  const owner = await createDb(url.toString(), POOL);
   await migrateDb(owner, MIGRATIONS);
   const withRole = (r: string) => {
     const u = new URL(url);
@@ -80,12 +82,12 @@ export async function freshDb(opts: { role?: "app_runtime" | "owner" } = {}): Pr
     u.searchParams.set("options", `-c role=${r}`);
     return u.toString();
   };
-  const handle = role === RUNTIME_ROLE ? await createDb(withRole(RUNTIME_ROLE)) : owner;
+  const handle = role === RUNTIME_ROLE ? await createDb(withRole(RUNTIME_ROLE), POOL) : owner;
   const extra = new Map<string, DbHandle>();
   const roleDb = async (r: string) => {
     let h = extra.get(r);
     if (!h) {
-      h = await createDb(withRole(r));
+      h = await createDb(withRole(r), POOL);
       extra.set(r, h);
     }
     return h.db;

@@ -15,7 +15,7 @@ import { beat, body, complete, harness, jsonReq, lease, makeUser, registerNode, 
 
 const cleanups: Array<() => Promise<void>> = [];
 afterAll(async () => {
-  for (const c of cleanups) await c();
+  await Promise.all(cleanups.map((c) => c()));
 });
 
 /** Seeded PRNG (mulberry32), so the job texts are the same every run. */

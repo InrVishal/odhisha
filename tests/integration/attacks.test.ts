@@ -20,7 +20,7 @@ import { agentReq, beat, body, complete, embeddingsFor, harness, jsonReq, lease,
 
 const cleanups: Array<() => Promise<void>> = [];
 afterAll(async () => {
-  for (const c of cleanups) await c();
+  await Promise.all(cleanups.map((c) => c()));
 });
 
 let h: Harness;
