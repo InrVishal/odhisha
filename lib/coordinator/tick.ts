@@ -174,6 +174,7 @@ async function startBackups(db: Db, now: Date): Promise<number> {
       inputKey: f.inputKey,
       inputSha256: f.inputSha256,
       wrappedKey: f.wrappedKey,
+      deadlineAt: f.deadlineAt,
     });
     started += 1;
   }

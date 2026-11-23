@@ -350,10 +350,25 @@ export const fragments = pgTable(
     completedByNodeId: uuid("completed_by_node_id").references(() => nodes.id, { onDelete: "set null" }),
     startedAt: timestamp("started_at", { withTimezone: true, mode: "date" }),
     completedAt: timestamp("completed_at", { withTimezone: true, mode: "date" }),
+    /**
+     * The job's deadline, copied here (it never changes) so the work queue is
+     * one index in lease order (fragment_queue_idx) instead of a join and sort
+     * over every pending piece. Null for canaries and challenges, which are
+     * leased on creation and never wait in the queue.
+     */
+    deadlineAt: timestamp("deadline_at", { withTimezone: true, mode: "date" }),
     createdAt: createdAt(),
   },
   (t) => [
     index("fragment_job_idx").on(t.jobId, t.status),
+    // The work queue, in the order lease takes it: backups first, checks last,
+    // then earliest deadline. Pending pieces only, so it stays small.
+    index("fragment_queue_idx")
+      .on(sql`(${t.kind} = 'backup') desc`, sql`(${t.kind} = 'verification')`, t.deadlineAt, t.seq)
+      .where(sql`${t.status} = 'pending'`),
+    // "Has this PC already run or checked this piece?" and "is it holding a lease?"
+    index("fragment_lease_node_idx").on(t.leaseNodeId),
+    index("fragment_completed_by_idx").on(t.completedByNodeId),
     index("fragment_lease_idx").on(t.status, t.leaseExpiresAt),
     // Every copy of one piece (checks, canaries, tie-breaks), the checks of a copy, and the replay check on hand-in.
     index("fragment_piece_idx").on(t.jobId, t.seq),

@@ -535,3 +535,39 @@ describe("agent telemetry (phase 4 contract)", () => {
     expect(row!.wattsEstimated).toBe(false);
   });
 });
+
+describe("load-path behaviour (Phase 8 load fixes)", () => {
+  it("PCs asking for work at the same moment each get a different piece (SKIP LOCKED), with no errors", async () => {
+    const owner = await makeUser(h.db, "owner@example.in");
+    const buyer = await makeUser(h.db, "buyer@example.in");
+    const pcs = [];
+    for (let i = 0; i < 6; i++) pcs.push(await registerNode(h, owner, { name: `PC ${i}` }));
+    for (const pc of pcs) expect((await beat(h, pc.token)).status).toBe(200);
+    await quoteAndConfirm(buyer, 1500);
+    const pieces = await h.db.select({ id: fragments.id, deadlineAt: fragments.deadlineAt }).from(fragments).where(eq(fragments.kind, "primary"));
+    // Each piece carries its job's deadline, so the queue index can order it.
+    const [job] = await h.db.select({ deadlineAt: jobs.deadlineAt }).from(jobs);
+    for (const p of pieces) expect(p.deadlineAt?.getTime()).toBe(job!.deadlineAt.getTime());
+
+    const leases = await Promise.all(pcs.map((pc) => lease(h, pc.token)));
+    const got = leases.filter((l): l is NonNullable<typeof l> => l !== null).map((l) => l.parsed.taskId);
+    expect(got).toHaveLength(Math.min(pcs.length, pieces.length));
+    expect(new Set(got).size).toBe(got.length);
+  });
+
+  it("writes a token's 'last used' time at most every 5 minutes, not on every agent request", async () => {
+    const { nodeTokens } = await import("@/lib/db/schema");
+    const owner = await makeUser(h.db, "owner@example.in");
+    const pc = await registerNode(h, owner);
+    const lastUsed = async () => (await h.db.select({ t: nodeTokens.lastUsedAt }).from(nodeTokens).where(eq(nodeTokens.nodeId, pc.nodeId)))[0]!.t;
+    await beat(h, pc.token);
+    const first = await lastUsed();
+    expect(first?.getTime()).toBe(h.clock.now().getTime());
+    h.clock.advance(60);
+    await beat(h, pc.token);
+    expect((await lastUsed())?.getTime()).toBe(first!.getTime());
+    h.clock.advance(5 * 60);
+    await beat(h, pc.token);
+    expect((await lastUsed())?.getTime()).toBe(h.clock.now().getTime());
+  });
+});

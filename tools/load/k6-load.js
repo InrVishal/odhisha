@@ -16,14 +16,18 @@
  *   means a limit fired where it shouldn't (counted per endpoint);
  * - no 5xx.
  *
- * Pacing: one round every ~6.5 s per user (a real agent polls every 10 s; this
- * is busier). At least 6.2 s between rounds keeps confirm under its limit of
+ * Pacing: one round every ~6.5 s per user (a real agent waits 5-7.5 s between
+ * polls; this is as busy). Each user starts at a random point in that cycle,
+ * as real PCs do (they switch on at different times and jitter their polls):
+ * the same request rate, without all 200 firing in the same instant every
+ * round (a lockstep herd the real agent avoids). At least 6.2 s between rounds keeps confirm under its limit of
  * 10 job submits a minute, so the numbers are for served requests, not 429s.
  */
 import { check, sleep } from "k6";
 import crypto from "k6/crypto";
 import { SharedArray } from "k6/data";
 import encoding from "k6/encoding";
+import exec from "k6/execution";
 import http from "k6/http";
 import { Counter } from "k6/metrics";
 
@@ -85,6 +89,7 @@ function vec(text) {
 export default function round() {
   const me = seed[(__VU - 1) % seed.length];
   const BASE = BASES[(__VU - 1) % BASES.length];
+  if (exec.vu.iterationInScenario === 0) sleep(Math.random() * 6.5);
   const agent = { authorization: `Bearer ${me.token}`, "content-type": "application/json", "x-real-ip": me.ip };
   const buyer = { cookie: me.cookie, origin: BASE, "content-type": "application/json", "x-real-ip": me.ip };
 

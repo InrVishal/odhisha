@@ -65,6 +65,7 @@ async function insertCheck(q: Q, of: FragmentRow): Promise<void> {
     inputKey: of.inputKey,
     inputSha256: of.inputSha256,
     wrappedKey: of.wrappedKey,
+    deadlineAt: of.deadlineAt,
   });
 }
 

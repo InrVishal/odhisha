@@ -64,6 +64,13 @@
       "when": 1795435269481,
       "tag": "0008_phase8_security",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795453879933,
+      "tag": "0009_phase8_queue_index",
+      "breakpoints": true
     }
   ]
 }

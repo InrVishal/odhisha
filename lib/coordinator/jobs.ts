@@ -207,6 +207,7 @@ export async function quoteJob(
         seq,
         kind: "primary",
         status: "pending",
+        deadlineAt: deadline,
         estGpuSeconds: fragmentSeconds[seq]!,
         itemCount: b - a,
         inputKey,

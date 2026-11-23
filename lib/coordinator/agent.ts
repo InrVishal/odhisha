@@ -47,19 +47,27 @@ export interface AuthedNode {
 }
 
 /** Looks up a node by token. Revoked tokens and revoked nodes get nothing. */
+/** How stale a token's "last used" time may get before it's rewritten. */
+export const TOKEN_LAST_USED_EVERY_MS = 5 * 60_000;
+
 export async function authenticateAgent(db: Db, authorization: string | null, now: Date): Promise<AuthedNode | null> {
   const m = /^Bearer (\S+)$/.exec(authorization ?? "");
   if (!m || !isWellFormedNodeToken(m[1]!)) return null;
   const hash = hashToken(m[1]!);
   const [row] = await db
-    .select({ node: nodes, tokenId: nodeTokens.id, tokenHash: nodeTokens.tokenHash })
+    .select({ node: nodes, tokenId: nodeTokens.id, tokenHash: nodeTokens.tokenHash, lastUsedAt: nodeTokens.lastUsedAt })
     .from(nodeTokens)
     .innerJoin(nodes, eq(nodes.id, nodeTokens.nodeId))
     .where(and(eq(nodeTokens.tokenHash, hash), isNull(nodeTokens.revokedAt)))
     .limit(1);
   // The lookup is by hash, so this compare is belt and braces, not timing-critical.
   if (!row || !safeEqual(row.tokenHash, hash) || row.node.status === "revoked") return null;
-  await db.update(nodeTokens).set({ lastUsedAt: now }).where(eq(nodeTokens.id, row.tokenId));
+  // "Last used" is shown to the owner to spot a forgotten or stolen token; to
+  // the nearest few minutes is enough, so it's written at most every 5 minutes
+  // instead of on every agent request.
+  if (!row.lastUsedAt || now.getTime() - row.lastUsedAt.getTime() >= TOKEN_LAST_USED_EVERY_MS) {
+    await db.update(nodeTokens).set({ lastUsedAt: now }).where(eq(nodeTokens.id, row.tokenId));
+  }
   return { node: row.node, tokenId: row.tokenId };
 }
 
@@ -191,72 +199,83 @@ export async function leaseFragment(
     if (owed && coverRand() < CANARY_ONLY_RATE) return sendCanary();
   }
 
-  const sibling = aliasedTable(fragments, "sibling");
-  const candidates = await db
-    .select({ f: fragments, j: jobs })
-    .from(fragments)
-    .innerJoin(jobs, eq(jobs.id, fragments.jobId))
-    .where(
-      and(
-        eq(fragments.status, "pending"),
-        // Challenges are made for one PC and leased on creation, never from the pool.
-        isNull(jobs.challenge),
-        lt(fragments.attempts, fragments.maxAttempts),
-        or(
-          and(inArray(fragments.kind, ["primary", "backup"]), inArray(jobs.status, ["queued", "running", "deadline_missed"])),
-          // Checks also run after the job has finished (until its data is purged).
-          and(eq(fragments.kind, "verification"), inArray(jobs.status, ["queued", "running", "completed", "deadline_missed"])),
-        ),
-        isNull(jobs.purgedAt),
-        eq(jobs.gpuClass, fresh!.gpuClass),
-        gte(jobs.maxWattTariff, wattTariff(view)),
-        gte(jobs.maxOwnerRate, fresh!.ownerRatePaisePerHr),
-        notExists(
-          db
-            .select({ one: sql`1` })
-            .from(sibling)
-            .where(
-              and(
-                eq(sibling.jobId, fragments.jobId),
-                eq(sibling.seq, fragments.seq),
-                ne(sibling.id, fragments.id),
-                or(eq(sibling.leaseNodeId, node.id), eq(sibling.completedByNodeId, node.id)),
-              ),
-            ),
-        ),
-      ),
-    )
-    // Backups first (a deadline is at risk), checks last (they never hold up a job).
-    .orderBy(desc(sql`${fragments.kind} = 'backup'`), asc(sql`${fragments.kind} = 'verification'`), asc(jobs.deadlineAt), asc(fragments.seq))
-    .limit(10);
-
   const closes = windowEndsAt(now, view.window);
   const me = { ownerId: fresh!.ownerId, deviceHash: fresh!.deviceHash, subnetHash: fresh!.subnetHash };
-  for (const { f, j } of candidates) {
-    // A check never goes to a PC on the same account, device or network as
-    // any PC that ran or checked the piece: two PCs of one person could
-    // agree on a wrong answer.
-    if (f.kind === "verification" && !mayCheck(me, await pieceOrigins(db, f.jobId, f.seq), mode)) continue;
-    const spec = WORKLOADS[j.workloadType];
-    const expected = estimateSeconds(spec, f.itemCount, nodeBenchmark(view));
-    if (closes && now.getTime() + expected * 1000 > closes.getTime()) continue;
-    const leaseUntil = new Date(now.getTime() + leaseSeconds(expected) * 1000);
-    const [taken] = await db
-      .update(fragments)
-      .set({
-        status: "leased",
-        leaseNodeId: node.id,
-        leaseExpiresAt: leaseUntil,
-        leaseExpectedSec: expected,
-        startedAt: now,
-        attempts: sql`${fragments.attempts} + 1`,
-      })
-      .where(and(eq(fragments.id, f.id), eq(fragments.status, "pending"), lt(fragments.attempts, fragments.maxAttempts)))
-      .returning();
-    if (!taken) continue;
-    await db.update(jobs).set({ status: "running" }).where(and(eq(jobs.id, j.id), eq(jobs.status, "queued")));
-    return { lease: await signLease(db, node, taken, j, keys, now), reason: null };
-  }
+  // Take the first suitable pending piece in queue order. The candidates are
+  // locked with SKIP LOCKED for this short transaction: PCs asking at the same
+  // moment each get different pieces instead of queueing on the same rows.
+  // fragment_queue_idx holds exactly this order (pending only), so this reads
+  // a few index entries however long the queue is.
+  const picked = await db.transaction(async (tx) => {
+    const sibling = aliasedTable(fragments, "sibling");
+    const candidates = await tx
+      .select({ f: fragments, j: jobs })
+      .from(fragments)
+      .innerJoin(jobs, eq(jobs.id, fragments.jobId))
+      .where(
+        and(
+          // A literal (not a parameter), so the partial index applies.
+          sql`${fragments.status} = 'pending'`,
+          // Challenges are made for one PC and leased on creation, never from the pool.
+          isNull(jobs.challenge),
+          lt(fragments.attempts, fragments.maxAttempts),
+          or(
+            and(inArray(fragments.kind, ["primary", "backup"]), inArray(jobs.status, ["queued", "running", "deadline_missed"])),
+            // Checks also run after the job has finished (until its data is purged).
+            and(eq(fragments.kind, "verification"), inArray(jobs.status, ["queued", "running", "completed", "deadline_missed"])),
+          ),
+          isNull(jobs.purgedAt),
+          eq(jobs.gpuClass, fresh!.gpuClass),
+          gte(jobs.maxWattTariff, wattTariff(view)),
+          gte(jobs.maxOwnerRate, fresh!.ownerRatePaisePerHr),
+          notExists(
+            tx
+              .select({ one: sql`1` })
+              .from(sibling)
+              .where(
+                and(
+                  eq(sibling.jobId, fragments.jobId),
+                  eq(sibling.seq, fragments.seq),
+                  ne(sibling.id, fragments.id),
+                  or(eq(sibling.leaseNodeId, node.id), eq(sibling.completedByNodeId, node.id)),
+                ),
+              ),
+          ),
+        ),
+      )
+      // Backups first (a deadline is at risk), checks last (they never hold up a job).
+      .orderBy(desc(sql`${fragments.kind} = 'backup'`), asc(sql`${fragments.kind} = 'verification'`), asc(fragments.deadlineAt), asc(fragments.seq))
+      .limit(10)
+      .for("update", { of: fragments, skipLocked: true });
+
+    for (const { f, j } of candidates) {
+      // A check never goes to a PC on the same account, device or network as
+      // any PC that ran or checked the piece: two PCs of one person could
+      // agree on a wrong answer.
+      if (f.kind === "verification" && !mayCheck(me, await pieceOrigins(tx, f.jobId, f.seq), mode)) continue;
+      const spec = WORKLOADS[j.workloadType];
+      const expected = estimateSeconds(spec, f.itemCount, nodeBenchmark(view));
+      if (closes && now.getTime() + expected * 1000 > closes.getTime()) continue;
+      const leaseUntil = new Date(now.getTime() + leaseSeconds(expected) * 1000);
+      const [taken] = await tx
+        .update(fragments)
+        .set({
+          status: "leased",
+          leaseNodeId: node.id,
+          leaseExpiresAt: leaseUntil,
+          leaseExpectedSec: expected,
+          startedAt: now,
+          attempts: sql`${fragments.attempts} + 1`,
+        })
+        .where(and(eq(fragments.id, f.id), eq(fragments.status, "pending"), lt(fragments.attempts, fragments.maxAttempts)))
+        .returning();
+      if (!taken) continue;
+      if (j.status === "queued") await tx.update(jobs).set({ status: "running" }).where(and(eq(jobs.id, j.id), eq(jobs.status, "queued")));
+      return { taken, j };
+    }
+    return null;
+  });
+  if (picked) return { lease: await signLease(db, node, picked.taken, picked.j, keys, now), reason: null };
   // Nothing else to do and pay is waiting on a canary: send one now.
   if (owed) return sendCanary();
   return { lease: null, reason: "no_work" };
