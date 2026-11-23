@@ -36,9 +36,16 @@ The copy describes the finished prototype. Each phase ticks off what it delivers
 - [x] **Phase 7:** Canaries that look like real work: re-runs of verified real pieces (proof: `tests/integration/canary.test.ts (classifier at chance)`)
 - [x] **Phase 7:** New and low-trust PCs checked on half their pieces (proof: `tests/unit/check-rate.test.ts, tests/integration/attacks.test.ts`)
 - [x] **Phase 7:** One payout UPI ID per account; shared devices and networks flagged and kept from checking each other (proof: `tests/integration/attacks.test.ts, tests/live/agent-preview.ts (flags raised)`)
-- [ ] **Phase 8:** Sentry error reports with personal details removed
+- [x] **Phase 8:** Admin needs the database role and the ADMIN_EMAILS allowlist, a login from the last 15 minutes and an authenticator code; anyone else gets a 404 (proof: `tests/integration/admin.test.ts, tests/e2e/dashboard.spec.ts, scripts/smoke.mjs`)
+- [x] **Phase 8:** The app runs as a least-privilege database role that can't change roles, the schema or the ledgers (proof: `tests/integration/db-roles.test.ts, tests/live/db-exposure.ts`)
+- [x] **Phase 8:** No secrets or source maps in anything a browser downloads; no exposed config files (proof: `scripts/scan-bundle.mjs, scripts/smoke.mjs`)
+- [x] **Phase 8:** Canary-only verification where no independent PC exists (pay held until a canary passes, no trust gain) (proof: `tests/integration/canary-only.test.ts`)
+- [x] **Phase 8:** Time-Bank credits earned per verified unit of work, not per second (proof: `tests/integration/timebank.test.ts`)
+- [x] **Phase 8:** Buyers can opt out of their pieces being reused as known-answer canaries (proof: `tests/integration/canary-only.test.ts`)
+- [x] **Phase 8:** p95 under 300 ms at 200 virtual users on quote, lease, heartbeat and hand-in (proof: `tools/load/k6-load.js (CI job 9)`)
+- [ ] **Phase 9:** Sentry error reports with personal details removed
 
-Done: 27 of 29.
+Done: 34 of 36.
 
 **Still open from you:** set `CONTACT_EMAIL` in Vercel so the privacy page can show a real address.
 
