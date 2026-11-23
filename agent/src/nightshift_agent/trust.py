@@ -90,19 +90,19 @@ def is_digest_pinned(image: str) -> bool:
 #: tests/unit/agent-pins.test.ts keeps the two lists identical.
 WHITELIST: dict[str, WorkloadPin] = {
     "text_embeddings": WorkloadPin(
-        image="ghcr.io/inrvishal/nightshift-text-embeddings@sha256:801508fb05c2376a184325404d331569f90853c9f4b97fd75d611e1dea7d8f87",
+        image="ghcr.io/inrvishal/nightshift-text-embeddings@sha256:e6cdda62e7101dd9aa0f6b45195115a88cbd602215d10fe086faf8614544481a",
         wants_gpu=True,
         memory="4g",
         cpus="2",
     ),
     "image_captioning": WorkloadPin(
-        image="ghcr.io/inrvishal/nightshift-image-captioning@sha256:38250f2d5c85a00de839ca8b8ac085fba11975bf44812a497a27646bca414d48",
+        image="ghcr.io/inrvishal/nightshift-image-captioning@sha256:ad181e1049b787adebde5d4eae3ffdae88c49431dfd2763245541a16b013cad2",
         wants_gpu=True,
         memory="6g",
         cpus="2",
     ),
     "image_resize": WorkloadPin(
-        image="ghcr.io/inrvishal/nightshift-image-resize@sha256:915665183d8a50330c979a1a89046afaa9fe8e173f6f0571a670c6ba5c0f883c",
+        image="ghcr.io/inrvishal/nightshift-image-resize@sha256:f4cef7bda40d6c7e4dc2fbcca5736ad582c07f516d900e25791e6e0e676820a7",
         wants_gpu=False,
         memory="2g",
         cpus="2",
