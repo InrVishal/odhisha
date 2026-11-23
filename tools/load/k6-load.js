@@ -29,7 +29,7 @@ import { SharedArray } from "k6/data";
 import encoding from "k6/encoding";
 import exec from "k6/execution";
 import http from "k6/http";
-import { Counter, Trend } from "k6/metrics";
+import { Counter, Rate, Trend } from "k6/metrics";
 
 const seed = new SharedArray("seed", () => JSON.parse(open(__ENV.SEED_FILE)));
 const BASES = (__ENV.BASE_URLS || __ENV.BASE_URL).split(",");
@@ -52,15 +52,20 @@ for (const name of ENDPOINTS) {
 // runner, so its timings describe that runner, not the app. The preview run
 // (load-preview.yml) is judged on p95.
 const judge = __ENV.JUDGE_LATENCY !== "0";
+// p95 targets per endpoint (approved by the owner on 2026-11-24, after the
+// preview measurements showed ~55-150 ms of every request is outside the
+// app's code, so one 300 ms bar for everything was not meaningful):
+// - heartbeat: 300 ms. Every PC sends it constantly; it does the least.
+// - lease, quote, confirm: 400 ms. 9-16 database round trips each.
+// - hand-in: 500 ms. It carries the result upload (tens of kB) and settles pay.
+const TARGET_P95_MS = { heartbeat: 300, lease: 400, quote: 400, confirm: 400, "hand-in": 500 };
 const p95 = {};
-for (const name of ["quote", "lease", "heartbeat", "hand-in"]) {
+for (const name of Object.keys(TARGET_P95_MS)) {
   // Successful responses only.
-  p95[`http_req_duration{name:${name},scenario:agents,expected_response:true}`] = [judge ? "p(95)<300" : "p(95)>=0"];
+  p95[`http_req_duration{name:${name},scenario:agents,expected_response:true}`] = [judge ? `p(95)<${TARGET_P95_MS[name]}` : "p(95)>=0"];
   // All responses, reported (not judged) for comparison.
   p95[`http_req_duration{name:${name},scenario:agents}`] = ["p(95)>=0"];
 }
-// Confirm (the buyer's "pay" step) is reported too, so its count is in the summary.
-p95["http_req_duration{name:confirm,scenario:agents}"] = ["p(95)>=0"];
 
 export const options = {
   scenarios: {
@@ -89,9 +94,14 @@ const split = {
   app: new Trend("split_app_ms", true),
   outside: new Trend("split_outside_function_ms", true),
   total: new Trend("split_function_total_ms", true),
+  // 1 for a function instance's first request (cold start), 0 otherwise.
+  cold: new Rate("split_cold_start"),
+  coldMs: new Trend("split_cold_start_ms", true),
 };
 if (__ENV.SERVER_TIMING === "1") {
-  for (const name of ENDPOINTS) for (const m of Object.values(split)) options.thresholds[`${m.name}{name:${name}}`] = ["p(50)>=0"];
+  for (const name of ENDPOINTS) {
+    for (const m of Object.values(split)) options.thresholds[`${m.name}{name:${name}}`] = [m.name === "split_cold_start" ? "rate>=0" : "p(50)>=0"];
+  }
 }
 function timing(res, name) {
   const h = res.headers["Server-Timing"];
@@ -106,6 +116,9 @@ function timing(res, name) {
   split.app.add(Math.max(0, total - rl - db), tags);
   split.outside.add(Math.max(0, res.timings.duration - total), tags);
   split.total.add(total, tags);
+  const cold = /(?:^|, )cold(?:,|$)/.test(h);
+  split.cold.add(cold, tags);
+  if (cold) split.coldMs.add(res.timings.duration, tags);
 }
 
 /** Counts each failed response by kind, tagged with its endpoint. */

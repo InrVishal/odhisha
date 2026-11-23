@@ -13,7 +13,7 @@ const pair = (k) => {
   const x = m[k];
   return x ? `${f(x.med)} / ${f(x["p(95)"])}` : "-";
 };
-const rows = [["endpoint", "ok p50 / p95", "count", "429", "5xx", "rate limits p50 / p95", "db p50 / p95", "queries p50", "app p50 / p95", "function total p50 / p95", "outside function p50 / p95"]];
+const rows = [["endpoint", "ok p50 / p95", "count", "429", "5xx", "rate limits p50 / p95", "db p50 / p95", "queries p50", "app p50 / p95", "function total p50 / p95", "outside function p50 / p95", "cold starts (share, p95 ms)"]];
 for (const name of ["heartbeat", "lease", "hand-in", "quote", "confirm"]) {
   const ok = m[`http_req_duration{name:${name},scenario:agents,expected_response:true}`] ?? m[`http_req_duration{name:${name},scenario:agents}`];
   rows.push([
@@ -28,6 +28,7 @@ for (const name of ["heartbeat", "lease", "hand-in", "quote", "confirm"]) {
     pair(`split_app_ms{name:${name}}`),
     pair(`split_function_total_ms{name:${name}}`),
     pair(`split_outside_function_ms{name:${name}}`),
+    m[`split_cold_start{name:${name}}`] ? `${(m[`split_cold_start{name:${name}}`].value * 100).toFixed(1)}%, ${f(m[`split_cold_start_ms{name:${name}}`]?.["p(95)"])}` : "-",
   ]);
 }
 const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => r[i].length)));

@@ -50,7 +50,7 @@ next-env.d.ts
 # Load test (tools/load): local seed data, the throwaway DB login, results
 load-seed.json
 load.env
-k6-summary.json
+k6-summary*.json
 *.server.log
 smoke-server.log
 load-server*.log

@@ -36,7 +36,10 @@ describe("Server-Timing (preview load test only)", () => {
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ ok: true });
     const h = res.headers.get("server-timing") ?? "";
-    expect(h).toMatch(/^rl;dur=[\d.]+;desc="2 calls", db;dur=[\d.]+;desc="2 queries", total;dur=[\d.]+$/);
+    expect(h).toMatch(/^rl;dur=[\d.]+;desc="2 calls", db;dur=[\d.]+;desc="2 queries", total;dur=[\d.]+(, cold)?$/);
+    // Only an instance's first request is its cold start.
+    const next = await withServerTiming(async () => new Response("ok"));
+    expect(next.headers.get("server-timing")).not.toContain("cold");
   });
 });
 

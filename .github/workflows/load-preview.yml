@@ -1,8 +1,14 @@
 # On-demand load test of a PR's preview on Vercel with Neon: the setup that
-# serves users. Add the label "load-test" to a PR to run it (only people with
-# write or triage access can label). Not on every push: one run uses ~28k
-# Vercel function calls, 10-25 min of Vercel active CPU and ~47k Upstash
-# commands, and Upstash is shared with production.
+# serves users. Only people with write or triage access can label a PR:
+# - "load-test": k6 runs here, on a GitHub runner (US);
+# - "load-test-hold": no k6 here. The deployment and its 200 seeded accounts
+#   are held for 20 minutes, and the URL and seed are published as an
+#   artifact encrypted to tools/load/hold.crt (the repo is public; only the
+#   machine with the matching private key can read it). Then k6 runs from a
+#   machine in India: bash tools/load/run-remote.sh (see that file).
+# Not on every push: one run uses ~24k Vercel function calls and several
+# Upstash commands per request. NEVER point previews at the Upstash database
+# production uses: on 2026-11-24 four runs used up its free monthly quota.
 #
 # What runs:
 # - a Neon branch load/pr-<n>-<run>, copied from the PR's preview branch
@@ -32,7 +38,7 @@ jobs:
   load:
     name: k6 on the preview (Vercel + Neon), 200 virtual users
     # Only the label, only this repo's PRs (forks get no secrets).
-    if: github.event.label.name == 'load-test' && github.event.pull_request.head.repo.full_name == github.repository
+    if: (github.event.label.name == 'load-test' || github.event.label.name == 'load-test-hold') && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -41,6 +47,7 @@ jobs:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       LOAD_BRANCH: load/pr-${{ github.event.number }}-${{ github.run_id }}
+      MODE: ${{ github.event.label.name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
@@ -104,11 +111,13 @@ jobs:
           esac
 
       - name: The network alone, runner to preview (edge reached, time to first byte for a cached static file and for a one-query function)
+        if: env.MODE == 'load-test'
         env:
           TARGET: ${{ steps.deploy.outputs.url }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: bash tools/load/network.sh
       - name: k6
+        if: env.MODE == 'load-test'
         env: { K6_VERSION: "2.3.0" }
         run: |
           F="k6-v${K6_VERSION}-linux-amd64.tar.gz"
@@ -117,14 +126,33 @@ jobs:
           curl -sSfL -o k6-checksums.txt "$BASE/k6-v${K6_VERSION}-checksums.txt"
           grep " $F\$" k6-checksums.txt | sha256sum -c -
           tar -xzf "$F" --strip-components=1 "k6-v${K6_VERSION}-linux-amd64/k6"
-      - name: "200 virtual users for 3 minutes against the preview (judged: p95 < 300 ms on successful responses, < 1% failed, no 429, no 5xx)"
+      - name: "200 virtual users for 3 minutes against the preview (judged on successful responses: p95 heartbeat 300, lease/quote/confirm 400, hand-in 500 ms; < 1% failed; no 429; no 5xx)"
+        if: env.MODE == 'load-test'
         env:
           BASE_URL: ${{ steps.deploy.outputs.url }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: ./k6 run --summary-export k6-summary.json -e BASE_URL="$BASE_URL" -e SEED_FILE="$PWD/load-seed.json" -e SERVER_TIMING=1 tools/load/k6-load.js
       - name: Per endpoint, where the time went (from Server-Timing)
-        if: always()
+        if: always() && env.MODE == 'load-test'
         run: node tools/load/split.mjs k6-summary.json || true
+
+      - name: "Hold mode: publish the URL and seed, encrypted to tools/load/hold.crt"
+        if: env.MODE == 'load-test-hold'
+        env:
+          TARGET: ${{ steps.deploy.outputs.url }}
+        run: |
+          node -e 'const fs=require("fs"); fs.writeFileSync("hold.json", JSON.stringify({ url: process.env.TARGET, branch: process.env.LOAD_BRANCH, seed: JSON.parse(fs.readFileSync("load-seed.json","utf8")) }))'
+          openssl cms -encrypt -binary -aes256 -in hold.json -outform DER -out hold.cms tools/load/hold.crt
+          rm -f hold.json
+          echo "encrypted hand-off: $(wc -c < hold.cms) bytes"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: env.MODE == 'load-test-hold'
+        with: { name: "load-hold-${{ github.run_id }}", path: hold.cms, retention-days: 1, if-no-files-found: error }
+      - name: "Hold mode: keep the deployment up for 20 minutes while k6 runs from India"
+        if: env.MODE == 'load-test-hold'
+        run: |
+          echo "ready at $(date -u +%H:%M:%SZ): run tools/load/run-remote.sh ${GITHUB_RUN_ID} now; cleanup at $(date -u -d '+20 minutes' +%H:%M:%SZ)"
+          sleep 1200
 
       - name: Free-tier quota this run used
         if: always()
@@ -133,7 +161,7 @@ jobs:
           NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
           BRANCH_ID: ${{ steps.neon.outputs.branch_id }}
         run: |
-          node tools/load/quota.mjs k6-summary.json || true
+          if [ -f k6-summary.json ]; then node tools/load/quota.mjs k6-summary.json || true; fi
           if [ -n "$BRANCH_ID" ]; then
             curl -sS -H "Authorization: Bearer $NEON_API_KEY" -H "Accept: application/json" \
               "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID" \

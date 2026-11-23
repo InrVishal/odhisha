@@ -7,6 +7,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
  *   rl;dur=<ms>;desc="<n> calls"     rate-limit checks (Upstash), summed
  *   db;dur=<ms>;desc="<n> queries"   database round trips (Neon), summed
  *   total;dur=<ms>                   the whole route, inside the function
+ *   cold                             only on the first request this function
+ *                                    instance serves (a cold start)
  *
  * so the load test can split a request's time into rate limits, database,
  * the app's own work (total - rl - db), and what happens outside the
@@ -49,18 +51,23 @@ export async function timed<T>(kind: "rl" | "db", fn: () => Promise<T>): Promise
   }
 }
 
-export function serverTimingHeader(t: Timings, totalMs: number): string {
-  return `rl;dur=${t.rlMs.toFixed(1)};desc="${t.rlCalls} calls", db;dur=${t.dbMs.toFixed(1)};desc="${t.dbQueries} queries", total;dur=${totalMs.toFixed(1)}`;
+export function serverTimingHeader(t: Timings, totalMs: number, cold = false): string {
+  return `rl;dur=${t.rlMs.toFixed(1)};desc="${t.rlCalls} calls", db;dur=${t.dbMs.toFixed(1)};desc="${t.dbQueries} queries", total;dur=${totalMs.toFixed(1)}${cold ? ", cold" : ""}`;
 }
+
+// One per function instance (module scope): the first request it serves is its cold start.
+let served = false;
 
 /** Runs a route, adding Server-Timing when enabled. */
 export async function withServerTiming(fn: () => Promise<Response>): Promise<Response> {
   if (!serverTimingEnabled()) return fn();
   const t: Timings = { rlMs: 0, rlCalls: 0, dbMs: 0, dbQueries: 0 };
+  const cold = !served;
+  served = true;
   const start = performance.now();
   const res = await store.run(t, fn);
   const out = new Response(res.body, res);
-  out.headers.set("Server-Timing", serverTimingHeader(t, performance.now() - start));
+  out.headers.set("Server-Timing", serverTimingHeader(t, performance.now() - start, cold));
   return out;
 }
 
