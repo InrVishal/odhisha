@@ -175,6 +175,8 @@ export const envSchema = z
      * where the test agents all run on one CI machine. Refused in production.
      */
     SYBIL_CHECKER_RULES: z.enum(["enforce", "report"]).default("enforce"),
+    /** Preview load test only: raises the per-IP agent limit (see policyFor in lib/ratelimit.ts). Refused in production. */
+    AGENT_IP_LIMIT_PER_MIN: z.coerce.number().int().min(1).max(1_000_000).optional(),
 
     // Payments, UPI payouts and EMI are always simulated in this prototype.
     DEMO_MODE: z
@@ -210,6 +212,9 @@ export const envSchema = z
       });
     }
 
+    if (e.APP_ENV === "production" && e.AGENT_IP_LIMIT_PER_MIN !== undefined) {
+      ctx.addIssue({ code: "custom", path: ["AGENT_IP_LIMIT_PER_MIN"], message: "must not be set in production (it is for the preview load test only)" });
+    }
     if (e.APP_ENV === "production" && e.SYBIL_CHECKER_RULES !== "enforce") {
       ctx.addIssue({ code: "custom", path: ["SYBIL_CHECKER_RULES"], message: "must be 'enforce' in production" });
     }

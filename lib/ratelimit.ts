@@ -1,6 +1,6 @@
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
-import { getEnv } from "@/lib/env";
+import { getEnv, type Env } from "@/lib/env";
 
 /**
  * Rate limiting. Upstash in preview/production (shared across all serverless
@@ -42,6 +42,17 @@ export const POLICIES = {
 
 export type PolicyName = keyof typeof POLICIES;
 
+/**
+ * The policy in force. Only agentIp can be overridden (AGENT_IP_LIMIT_PER_MIN),
+ * and only outside production (env validation refuses it there): the preview
+ * load test sends 200 virtual PCs from one runner IP, which this per-IP limit
+ * would otherwise answer with 429s it isn't meant for.
+ */
+export function policyFor(name: PolicyName, env: Pick<Env, "APP_ENV" | "AGENT_IP_LIMIT_PER_MIN">): Policy {
+  if (name === "agentIp" && env.AGENT_IP_LIMIT_PER_MIN && env.APP_ENV !== "production") return { max: env.AGENT_IP_LIMIT_PER_MIN, windowSec: 60 };
+  return POLICIES[name];
+}
+
 /** Fixed-window counter in process memory. Dev/test only. */
 export class MemoryLimiter implements Limiter {
   private hits = new Map<string, { count: number; reset: number }>();
@@ -74,7 +85,7 @@ export function getLimiter(name: PolicyName): Limiter {
   let l = limiters.get(name);
   if (l) return l;
   const env = getEnv();
-  const policy = POLICIES[name];
+  const policy = policyFor(name, env);
   if (env.RATE_LIMIT_BACKEND === "upstash") {
     const rl = new Ratelimit({
       redis: new Redis({ url: env.UPSTASH_REDIS_REST_URL!, token: env.UPSTASH_REDIS_REST_TOKEN! }),

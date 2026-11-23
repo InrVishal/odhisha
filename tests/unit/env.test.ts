@@ -87,6 +87,11 @@ describe("parseEnv", () => {
     expect(env.AUTH_GOOGLE_ID).toBeUndefined();
   });
 
+  it("refuses AGENT_IP_LIMIT_PER_MIN in production; allows it on a preview (load test)", () => {
+    expect(issuesOf({ ...prodEnv, AGENT_IP_LIMIT_PER_MIN: "100000" }).join()).toMatch(/AGENT_IP_LIMIT_PER_MIN/);
+    expect(parseEnv({ ...prodEnv, VERCEL_ENV: "preview", AGENT_IP_LIMIT_PER_MIN: "100000" }).AGENT_IP_LIMIT_PER_MIN).toBe(100_000);
+  });
+
   it.each(["preview", "production"])("refuses NODE_TLS_REJECT_UNAUTHORIZED=0 in %s (it would turn off certificate checks)", (vercelEnv) => {
     expect(issuesOf({ ...prodEnv, VERCEL_ENV: vercelEnv, NODE_TLS_REJECT_UNAUTHORIZED: "0" }).join()).toMatch(/NODE_TLS_REJECT_UNAUTHORIZED/);
     expect(issuesOf({ ...prodEnv, VERCEL_ENV: vercelEnv, NODE_TLS_REJECT_UNAUTHORIZED: "1" })).toEqual([]);

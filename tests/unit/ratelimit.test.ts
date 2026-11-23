@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCache } from "@/lib/env";
 import {
+  policyFor,
   checkLimit,
   getLimiter,
   MemoryLimiter,
@@ -95,5 +96,17 @@ describe("upstash backend", () => {
     const l = getLimiter("agentNode");
     expect(l).not.toBeInstanceOf(MemoryLimiter);
     expect(typeof l.limit).toBe("function");
+  });
+});
+
+describe("AGENT_IP_LIMIT_PER_MIN (preview load test only)", () => {
+  it("raises only the per-IP agent limit, and never in production", () => {
+    const preview = { APP_ENV: "preview" as const, AGENT_IP_LIMIT_PER_MIN: 100_000 };
+    expect(policyFor("agentIp", preview)).toEqual({ max: 100_000, windowSec: 60 });
+    for (const other of ["agentNode", "quoteUser", "jobSubmitUser", "loginIp", "accountUser"] as const) {
+      expect(policyFor(other, preview)).toEqual(POLICIES[other]);
+    }
+    expect(policyFor("agentIp", { ...preview, APP_ENV: "production" })).toEqual(POLICIES.agentIp);
+    expect(policyFor("agentIp", { APP_ENV: "preview", AGENT_IP_LIMIT_PER_MIN: undefined })).toEqual(POLICIES.agentIp);
   });
 });

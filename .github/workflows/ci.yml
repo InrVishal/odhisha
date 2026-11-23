@@ -263,7 +263,7 @@ jobs:
       # and traces hold page contents and cookies. Failures are read from the log.
 
   load:
-    name: 9 · Load test (k6, 200 virtual users, p95 < 300 ms)
+    name: 9 · Load correctness (k6, 200 virtual users, local; latency is judged on the preview)
     needs: security
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -294,27 +294,23 @@ jobs:
           curl -sSfL -o k6-checksums.txt "$BASE/k6-v${K6_VERSION}-checksums.txt"
           grep " $F\$" k6-checksums.txt | sha256sum -c -
           tar -xzf "$F" --strip-components=1 "k6-v${K6_VERSION}-linux-amd64/k6"
-      # Runs on this runner only: the app and its database are local. The preview
-      # and production are never load-tested, so no Vercel, Neon or Upstash quota
-      # is used, and per-IP limits (which Vercel's real client IP would trip,
-      # since every virtual user comes from this one runner) don't skew results.
-      - name: "Capacity of ONE app process (reported, not judged): 200 virtual users for 3 minutes"
+      # Correctness under concurrency on every push: 200 virtual users against 3
+      # local app processes and a local Postgres, judged on failures, 429s and
+      # 5xx only. App, Postgres and k6 share this runner, so its timings describe
+      # the runner, not the app: they're printed, not judged. Latency is judged
+      # on the real setup by .github/workflows/load-preview.yml (label "load-test").
+      - name: "200 virtual users, 3 local app processes: no failures, no 429s, no 5xx (timings: this runner only)"
         env:
           ADMIN_URL: postgres://postgres:postgres@localhost:5432/postgres
+          JUDGE_LATENCY: "0"
         run: |
           echo "runner: $(nproc) vCPUs"
-          bash tools/load/prepare-db.sh 200 load-seed.json
-          bash tools/load/run.sh 1 k6-summary-1-process.json --no-thresholds
-      - name: "Judged run, 3 app processes (like 3 Vercel instances): 200 virtual users for 3 minutes"
-        env:
-          ADMIN_URL: postgres://postgres:postgres@localhost:5432/postgres
-        run: |
           bash tools/load/prepare-db.sh 200 load-seed.json
           # Where the time goes (CPU per process, what Postgres waits on), printed after k6.
           node tools/load/sample.mjs 150 40 > load-sample.txt 2>&1 &
           SAMPLER=$!
           status=0
-          bash tools/load/run.sh 3 k6-summary.json || status=$?
+          bash tools/load/run.sh 3 k6-summary.json -e JUDGE_LATENCY="$JUDGE_LATENCY" || status=$?
           wait "$SAMPLER" || true
           cat load-sample.txt
           echo "server errors (any process):"

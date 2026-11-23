@@ -201,14 +201,14 @@ export async function leaseFragment(
 
   const closes = windowEndsAt(now, view.window);
   const me = { ownerId: fresh!.ownerId, deviceHash: fresh!.deviceHash, subnetHash: fresh!.subnetHash };
-  // Take the first suitable pending piece in queue order. The candidates are
-  // locked with SKIP LOCKED for this short transaction: PCs asking at the same
-  // moment each get different pieces instead of queueing on the same rows.
-  // fragment_queue_idx holds exactly this order (pending only), so this reads
-  // a few index entries however long the queue is.
-  const picked = await db.transaction(async (tx) => {
+  // The first suitable pending piece in queue order. fragment_queue_idx holds
+  // exactly this order (pending only), so this reads a few index entries
+  // however long the queue is. No locks here: each claim below locks only the
+  // row it takes, with SKIP LOCKED, so PCs asking at the same moment each move
+  // on to the next piece at once instead of waiting on (or hiding) each other's.
+  {
     const sibling = aliasedTable(fragments, "sibling");
-    const candidates = await tx
+    const candidates = await db
       .select({ f: fragments, j: jobs })
       .from(fragments)
       .innerJoin(jobs, eq(jobs.id, fragments.jobId))
@@ -229,7 +229,7 @@ export async function leaseFragment(
           gte(jobs.maxWattTariff, wattTariff(view)),
           gte(jobs.maxOwnerRate, fresh!.ownerRatePaisePerHr),
           notExists(
-            tx
+            db
               .select({ one: sql`1` })
               .from(sibling)
               .where(
@@ -245,19 +245,18 @@ export async function leaseFragment(
       )
       // Backups first (a deadline is at risk), checks last (they never hold up a job).
       .orderBy(desc(sql`${fragments.kind} = 'backup'`), asc(sql`${fragments.kind} = 'verification'`), asc(fragments.deadlineAt), asc(fragments.seq))
-      .limit(10)
-      .for("update", { of: fragments, skipLocked: true });
+      .limit(10);
 
     for (const { f, j } of candidates) {
       // A check never goes to a PC on the same account, device or network as
       // any PC that ran or checked the piece: two PCs of one person could
       // agree on a wrong answer.
-      if (f.kind === "verification" && !mayCheck(me, await pieceOrigins(tx, f.jobId, f.seq), mode)) continue;
+      if (f.kind === "verification" && !mayCheck(me, await pieceOrigins(db, f.jobId, f.seq), mode)) continue;
       const spec = WORKLOADS[j.workloadType];
       const expected = estimateSeconds(spec, f.itemCount, nodeBenchmark(view));
       if (closes && now.getTime() + expected * 1000 > closes.getTime()) continue;
       const leaseUntil = new Date(now.getTime() + leaseSeconds(expected) * 1000);
-      const [taken] = await tx
+      const [taken] = await db
         .update(fragments)
         .set({
           status: "leased",
@@ -267,15 +266,14 @@ export async function leaseFragment(
           startedAt: now,
           attempts: sql`${fragments.attempts} + 1`,
         })
-        .where(and(eq(fragments.id, f.id), eq(fragments.status, "pending"), lt(fragments.attempts, fragments.maxAttempts)))
+        // Only if still pending and nobody else is taking it right now.
+        .where(eq(fragments.id, sql`(select q.id from fragment q where q.id = ${f.id} and q.status = 'pending' and q.attempts < q.max_attempts for update skip locked)`))
         .returning();
       if (!taken) continue;
-      if (j.status === "queued") await tx.update(jobs).set({ status: "running" }).where(and(eq(jobs.id, j.id), eq(jobs.status, "queued")));
-      return { taken, j };
+      if (j.status === "queued") await db.update(jobs).set({ status: "running" }).where(and(eq(jobs.id, j.id), eq(jobs.status, "queued")));
+      return { lease: await signLease(db, node, taken, j, keys, now), reason: null };
     }
-    return null;
-  });
-  if (picked) return { lease: await signLease(db, node, picked.taken, picked.j, keys, now), reason: null };
+  }
   // Nothing else to do and pay is waiting on a canary: send one now.
   if (owed) return sendCanary();
   return { lease: null, reason: "no_work" };
