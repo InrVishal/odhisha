@@ -26,13 +26,13 @@ The copy describes the finished prototype. Each phase ticks off what it delivers
 - [x] **Phase 5:** Invoices (PDF) show the deadline refund line automatically (proof: `tests/unit/pdf.test.ts, tests/integration/dashboard.test.ts (refund line), tests/e2e/dashboard.spec.ts`)
 - [x] **Phase 5:** Owner earnings show electricity as its own line; owners see every piece their PC ran (proof: `tests/integration/dashboard.test.ts (ownerPieces, earningsByNode), tests/e2e/dashboard.spec.ts`)
 - [x] **Phase 5:** Dashboard: download your data and delete your account; ledger keeps records without your email (proof: `tests/integration/account.test.ts, tests/e2e/dashboard.spec.ts`)
-- [ ] **Phase 6:** About 1 piece in 10 re-run on a second PC; trust scores; bad PCs paused
-- [ ] **Phase 6:** Only work that passes checks earns Time-Bank credits
+- [x] **Phase 6:** About 1 piece in 10 re-run on a second PC; trust scores; bad PCs paused (proof: `tests/unit/verify.test.ts, tests/integration/verification.test.ts, tests/live/agent-preview.ts (second real agent checks the first)`)
+- [ ] **Phase 7:** Only work that passes checks earns Time-Bank credits
 - [ ] **Phase 7:** Time-Bank wallet (demo): earn and spend credits; no cash-out, sale or transfer
 - [ ] **Phase 7:** GPU-on-EMI simulator (demo only, no lending)
 - [ ] **Phase 8:** Sentry error reports with personal details removed
 
-Done: 17 of 23.
+Done: 18 of 23.
 
 **Still open from you:** set `CONTACT_EMAIL` in Vercel so the privacy page can show a real address.
 
@@ -40,7 +40,6 @@ Done: 17 of 23.
 
 ## Everywhere
 
-- Demo banner: This is a working prototype. Payments, payouts and EMI are simulated (demo mode). No real money moves.
 - Footer: Idle GPUs, pooled overnight for AI jobs. / Built by a small student team in India. / Demo mode: payments, UPI payouts and GPU EMI are simulated.
 - When no contact email is set: We'll add a contact email before public launch.
 

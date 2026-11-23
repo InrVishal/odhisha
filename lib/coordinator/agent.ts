@@ -10,6 +10,7 @@ import type { CoordinatorKeys } from "@/lib/security/keys";
 import { MAX_BENCHMARK_SCORE } from "@/lib/timebank";
 import { CoordinatorError } from "./errors";
 import { cancelSiblings, completeJobIfDone, failJobIfPieceDead, type Q } from "./lifecycle";
+import { queueCheckIfPicked, resolveCheck } from "./verification";
 import { toNodeView, type NodeRow } from "./nodes";
 import {
   fragmentPay,
@@ -138,9 +139,12 @@ export async function leaseFragment(
     .where(
       and(
         eq(fragments.status, "pending"),
-        inArray(fragments.kind, ["primary", "backup"]),
         lt(fragments.attempts, fragments.maxAttempts),
-        inArray(jobs.status, ["queued", "running", "deadline_missed"]),
+        or(
+          and(inArray(fragments.kind, ["primary", "backup"]), inArray(jobs.status, ["queued", "running", "deadline_missed"])),
+          // Checks also run after the job has finished (until its data is purged).
+          and(eq(fragments.kind, "verification"), inArray(jobs.status, ["queued", "running", "completed", "deadline_missed"])),
+        ),
         isNull(jobs.purgedAt),
         eq(jobs.gpuClass, fresh!.gpuClass),
         gte(jobs.maxWattTariff, wattTariff(view)),
@@ -160,7 +164,8 @@ export async function leaseFragment(
         ),
       ),
     )
-    .orderBy(desc(sql`${fragments.kind} = 'backup'`), asc(jobs.deadlineAt), asc(fragments.seq))
+    // Backups first (a deadline is at risk), checks last (they never hold up a job).
+    .orderBy(desc(sql`${fragments.kind} = 'backup'`), asc(sql`${fragments.kind} = 'verification'`), asc(jobs.deadlineAt), asc(fragments.seq))
     .limit(10);
 
   const closes = windowEndsAt(now, view.window);
@@ -290,7 +295,18 @@ export async function completeFragment(
         .returning({ id: fragments.id });
       if (!done) throw new CoordinatorError(409, "lease_lost", "This lease is no longer yours. Drop the result.");
       accepted = true;
-      await cancelSiblings(tx, f);
+      if (f.kind === "verification") {
+        await resolveCheck(tx, { ...f, status: "done", outputKey, outputDigest: args.sha256, completedAt: args.now, completedByNodeId: node.id }, {
+          workload: j.workloadType,
+          output: args.body,
+          dataKey: args.dataKey,
+          now: args.now,
+          ipSecret: args.ipSecret,
+        });
+      } else {
+        await cancelSiblings(tx, f);
+        await queueCheckIfPicked(tx, { ...f, status: "done", outputKey, outputDigest: args.sha256, completedAt: args.now, completedByNodeId: node.id });
+      }
     } else {
       // A cancelled copy: another node finished the piece while this one was
       // still working. We asked for this work, so the owner is paid for it.
@@ -300,7 +316,7 @@ export async function completeFragment(
         .where(and(eq(fragments.id, f.id), eq(fragments.status, "cancelled"), eq(fragments.attempts, args.attempt)));
     }
 
-    const memo = `${j.workloadType} piece ${f.seq + 1}/${j.fragmentCount}`;
+    const memo = `${f.kind === "verification" ? "check of " : ""}${j.workloadType} piece ${f.seq + 1}/${j.fragmentCount}`;
     await bookOwner(tx, {
       ownerId: node.ownerId,
       nodeId: node.id,
@@ -321,7 +337,7 @@ export async function completeFragment(
       idempotencyKey: ledgerKeys.computePay(f.id),
       memo: `Compute for ${memo}`,
     });
-    if (accepted) await completeJobIfDone(tx, j.id, args.now, args.ipSecret);
+    if (accepted && f.kind !== "verification") await completeJobIfDone(tx, j.id, args.now, args.ipSecret);
     return { accepted, paidPaise: pay.electricityPaise + pay.ownerPayPaise };
   });
 }

@@ -83,6 +83,9 @@ async function main(): Promise<void> {
 
   const state = mkdtempSync(path.join(tmpdir(), "ns-agent-"));
   const env = { ...process.env, NIGHTSHIFT_STATE_DIR: state, NIGHTSHIFT_NO_KEYRING: "1", NIGHTSHIFT_VERCEL_BYPASS: BYPASS };
+  // A second agent (its own state, token and node) for the verification check.
+  const state2 = mkdtempSync(path.join(tmpdir(), "ns-agent-"));
+  const env2 = { ...env, NIGHTSHIFT_STATE_DIR: state2 };
   try {
     const login = run("nightshift-agent", ["login", "-", "--api", BASE], { env });
     login.child.stdin!.end(`${reg.token}\n`);
@@ -125,6 +128,27 @@ async function main(): Promise<void> {
     if (!nodes.nodes[0]?.wattsEstimated) fail("CPU mode watts should be marked estimated");
     log(`PASS: ${items.length} embeddings × 384 dims downloaded by the buyer, all normalised`);
 
+    // Verification: a one-piece job always has its piece checked. A second PC
+    // (another real agent, another real container) re-runs it, and the
+    // coordinator compares the two results.
+    const reg2 = await api<{ node: { id: string }; token: string }>(owner, "POST", "/api/nodes", { name: "CI checker", gpuClass: "cpu" });
+    await api(owner, "PATCH", `/api/nodes/${reg2.node.id}`, { nightWindowStartMin: 0, nightWindowEndMin: 0 });
+    const login2 = run("nightshift-agent", ["login", "-", "--api", BASE], { env: env2 });
+    login2.child.stdin!.end(`${reg2.token}\n`);
+    await login2;
+    log(`second node ${reg2.node.id.slice(0, 8)} registered to check the first one's work`);
+    const checker = await run("nightshift-agent", ["start", "--once", "--no-gpu", "--cpu-watts", "65"], { env: env2, timeout: 15 * 60_000 });
+    for (const line of checker.stdout.trim().split("\n").concat(checker.stderr.trim().split("\n"))) if (line) log(`checker: ${line}`);
+    const checked = await api<{ job: { status: string; checks: { planned: number; matched: number; corrected: number; inconclusive: number; waiting: number } } }>(buyer, "GET", `/api/jobs/${jobId}`);
+    log(`job checks: ${JSON.stringify(checked.job.checks)}`);
+    if (checked.job.checks.planned !== 1 || checked.job.checks.matched !== 1) fail("the piece should have been re-run on the second PC and matched");
+    const trust = await api<{ nodes: Array<{ id: string; trustScore: number; checksPassed: number; checksFailed: number }> }>(owner, "GET", "/api/nodes");
+    for (const n of trust.nodes) {
+      log(`node ${n.id.slice(0, 8)}: trust ${n.trustScore}, checks passed ${n.checksPassed}, failed ${n.checksFailed}`);
+      if (n.trustScore !== 520 || n.checksPassed !== 1 || n.checksFailed !== 0) fail("both PCs should have passed the check (trust 500 → 520)");
+    }
+    log("PASS: the piece was re-run on a second PC, the results matched, and both PCs' trust went up");
+
     // Hand the sessions and the finished job to the dashboard browser tests.
     // A private temp file, never printed: the tokens are live for an hour.
     const authFile = process.env.E2E_AUTH_FILE;
@@ -134,6 +158,7 @@ async function main(): Promise<void> {
     }
   } finally {
     rmSync(state, { recursive: true, force: true });
+    rmSync(state2, { recursive: true, force: true });
   }
 }
 

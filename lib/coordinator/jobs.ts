@@ -13,6 +13,7 @@ import { CLASS_SPECS, NODE_CLASSES, type NodeClass } from "./classes";
 import { CoordinatorError, notFound } from "./errors";
 import { purgeTime } from "./lifecycle";
 import { toNodeView } from "./nodes";
+import { jobChecks, planVerification, type JobChecks } from "./verification";
 import {
   nodeWatts,
   planFragments,
@@ -84,6 +85,8 @@ export interface PublicJob {
   /** What the buyer has actually paid for this job (charge − refunds). */
   netChargedPaise: number;
   progress: { fragmentsDone: number; fragmentsTotal: number; nodesWorking: number };
+  /** Pieces re-run on a second PC to check them, and how that went. */
+  checks: JobChecks;
   resultsAvailable: boolean;
   purged: boolean;
   /** Payments are simulated in this prototype. */
@@ -225,6 +228,8 @@ export async function confirmJob(ctx: Ctx, jobId: string): Promise<PublicJob> {
       .where(and(eq(jobs.id, jobId), eq(jobs.buyerId, ctx.buyerId), eq(jobs.status, "quoted"), gt(jobs.quoteExpiresAt, ctx.now)))
       .returning({ id: jobs.id });
     if (!updated) throw new CoordinatorError(409, "not_quoted", "This job was already confirmed or cancelled.");
+    // About 1 piece in 10 (at least one) will be re-run on a second PC.
+    await planVerification(tx, jobId, job.fragmentCount);
     await bookBuyer(tx, {
       buyerId: ctx.buyerId,
       jobId,
@@ -283,6 +288,7 @@ async function toPublicJob(db: Db, job: typeof jobs.$inferSelect): Promise<Publi
     refunded: Boolean(job.refundedAt),
     netChargedPaise: await jobNetCharge(db, job.buyerId, job.id),
     progress: { fragmentsDone: done, fragmentsTotal: job.fragmentCount, nodesWorking: working },
+    checks: await jobChecks(db, job.id),
     resultsAvailable: finished && !job.purgedAt,
     purged: Boolean(job.purgedAt),
     demo: true,

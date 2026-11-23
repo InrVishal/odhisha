@@ -18,6 +18,7 @@ export const ledgerKeys = {
   refund: (jobId: string) => `refund:${jobId}`,
   computePay: (fragmentId: string) => `pay:${fragmentId}`,
   power: (fragmentId: string) => `power:${fragmentId}`,
+  reversal: (fragmentId: string) => `reversal:${fragmentId}`,
 };
 
 /** Returns true if this call wrote the row, false if it was already booked. */
@@ -51,6 +52,28 @@ export async function bookOwner(
   const res = await db
     .insert(ownerLedger)
     .values(row)
+    .onConflictDoNothing({ target: ownerLedger.idempotencyKey })
+    .returning({ id: ownerLedger.id });
+  return res.length === 1;
+}
+
+/**
+ * Takes back the compute pay booked for one fragment (it failed its check on
+ * two other PCs). Electricity is left alone. Booked once, like every entry.
+ */
+export async function bookOwnerReversal(
+  db: Tx,
+  row: { ownerId: string; nodeId: string; jobId: string; fragmentId: string; idempotencyKey: string; memo: string },
+): Promise<boolean> {
+  const [paid] = await db
+    .select({ total: sql<string | null>`coalesce(sum(${ownerLedger.amountPaise}), 0)` })
+    .from(ownerLedger)
+    .where(and(eq(ownerLedger.ownerId, row.ownerId), eq(ownerLedger.fragmentId, row.fragmentId), eq(ownerLedger.entryType, "compute_pay")));
+  const amount = Number(paid?.total ?? 0);
+  if (amount <= 0) return false;
+  const res = await db
+    .insert(ownerLedger)
+    .values({ ...row, entryType: "reversal", amountPaise: -amount })
     .onConflictDoNothing({ target: ownerLedger.idempotencyKey })
     .returning({ id: ownerLedger.id });
   return res.length === 1;

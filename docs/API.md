@@ -14,7 +14,7 @@ Writes need a same-origin `Origin` header.
 | POST | `/api/jobs/{id}/confirm` | – | Charges (simulated) and queues the job. 409 `quote_expired` / `not_quoted`. Limited to 10 a minute |
 | POST | `/api/jobs/{id}/cancel` | – | Only for a quote that hasn't been confirmed. Deletes its data now |
 | GET | `/api/jobs` | – | The buyer's last 50 jobs |
-| GET | `/api/jobs/{id}` | – | Status, progress (`fragmentsDone`, `fragmentsTotal`, `nodesWorking`), `refunded`, `netChargedPaise` |
+| GET | `/api/jobs/{id}` | – | Status, progress (`fragmentsDone`, `fragmentsTotal`, `nodesWorking`), `refunded`, `netChargedPaise`, and `checks` (`planned`, `matched`, `corrected`, `inconclusive`, `waiting`): the pieces re-run on a second PC and how that went |
 | GET | `/api/jobs/{id}/results` | – | A streamed download (`Content-Disposition: attachment`): `{ jobId, workloadType, items: [...] }`, one item per input, in input order. 409 until the job finishes, 410 after the 7-day purge |
 | GET | `/api/jobs/{id}/invoice` | – | The invoice as a PDF download: the quote breakdown, the charge and, if the deadline was missed, the refund line. 409 `no_invoice` until the quote is confirmed |
 
@@ -33,7 +33,7 @@ Workloads (`lib/coordinator/workloads.ts`):
 | Method | Path | Body | Notes |
 | --- | --- | --- | --- |
 | POST | `/api/nodes` | `{ name, gpuClass }` | 201 `{ node, token }`. **The token is shown once.** Up to 20 PCs per owner |
-| GET | `/api/nodes` | – | The owner's PCs, with `available` and `unavailableReason` |
+| GET | `/api/nodes` | – | The owner's PCs, with `available`, `unavailableReason`, `trustScore`, `checksPassed`, `checksFailed` |
 | GET / PATCH | `/api/nodes/{id}` | Any of `name`, `tariffPaisePerKwh`, `ownerRatePaisePerHr`, `nightWindowStartMin`, `nightWindowEndMin` (minutes after midnight; start = end means all day), `timezone`, `paused` | |
 | POST | `/api/nodes/{id}/token` | – | New token, shown once. Old ones stop working |
 | DELETE | `/api/nodes/{id}/token` | – | Revoke every token. The agent is locked out, and its work goes back in the queue |
@@ -49,6 +49,16 @@ Node management is limited to 20 requests an hour.
 | DELETE | `/api/account` | `{ "confirm": "DELETE" }` | Removes the email and every login, revokes every PC token, deletes all stored job data now. Ledger rows stay under the account id. 409 `jobs_running` while a job is queued or running. Clears the session cookie |
 
 Both are limited to 5 requests an hour.
+
+## Admin (session cookie, role `admin` in the database)
+
+| Method | Path | Body | Notes |
+| --- | --- | --- | --- |
+| POST | `/api/admin/nodes/{id}/release` | – | Lets a quarantined PC work again, with trust just above the quarantine line. Anyone who isn't an admin (checked in the database on every call) gets a 404. 409 `not_quarantined` |
+
+## Verification
+
+About 1 piece in 10 of every job (at least one) is picked when the buyer confirms. Once a picked piece is done, a **verification copy** is queued. It looks like any other task to an agent, and it's never given to a PC that ran or holds another copy of the same piece. Checks are leased after every other kind of work and never hold up a job. When the outputs disagree, a third PC breaks the tie. See `lib/coordinator/verification.ts`.
 
 ## Agent (`Authorization: Bearer nsn_…`)
 

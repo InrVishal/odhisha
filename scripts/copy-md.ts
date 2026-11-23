@@ -36,7 +36,6 @@ export function renderCopyMd(): string {
     "",
     "## Everywhere",
     "",
-    `- Demo banner: ${c.site.demoBanner}`,
     `- Footer: ${c.site.tagline} / ${c.site.footer.team} / ${c.site.footer.demo}`,
     `- When no contact email is set: ${c.site.footer.contactMissing}`,
     "",

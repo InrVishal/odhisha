@@ -20,9 +20,10 @@ test("pricing calculator shows the full breakdown, electricity included", async 
   await expect(out).toContainText("Enter hours as a number");
 });
 
-test("home page shows the demo-mode banner and a computed sample quote", async ({ page }) => {
+test("home page says demo mode (in the footer, no top banner) and shows a computed sample quote", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByText("Payments, payouts and EMI are simulated (demo mode)")).toBeVisible();
+  await expect(page.getByText("This is a working prototype")).toHaveCount(0);
+  await expect(page.getByRole("contentinfo").getByText(/Demo mode: payments, UPI payouts and GPU EMI are simulated/)).toBeVisible();
   await expect(page.getByText(/Sample quote: 14 GPU-hours on RTX 4070 PCs .*₹552, done by 6:00 AM/)).toBeVisible();
 });
 

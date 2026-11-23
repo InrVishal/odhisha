@@ -57,6 +57,13 @@ export const jobStatus = pgEnum("job_status", [
 ]);
 export const fragmentStatus = pgEnum("fragment_status", ["pending", "leased", "done", "failed", "cancelled"]);
 export const fragmentKind = pgEnum("fragment_kind", ["primary", "verification", "backup"]);
+/**
+ * A verification copy's result. match: agrees with the copy it checks.
+ * mismatch: disagrees, so a tie-break copy runs. corrected: a tie-break that
+ * sided with the first checker, so the checked copy was wrong and its output
+ * was replaced. inconclusive: a tie-break that agreed with nobody.
+ */
+export const checkVerdict = pgEnum("check_verdict", ["match", "mismatch", "corrected", "inconclusive"]);
 export const ownerEntryType = pgEnum("owner_entry_type", ["power_reimbursement", "compute_pay", "payout", "reversal"]);
 export const buyerEntryType = pgEnum("buyer_entry_type", ["charge", "refund"]);
 export const creditEntryType = pgEnum("credit_entry_type", ["earned", "spent", "reversal"]);
@@ -154,6 +161,9 @@ export const nodes = pgTable(
     benchmarkScore: integer("benchmark_score"),
     /** 0..1000. New nodes start in the middle and move with verification results. */
     trustScore: integer("trust_score").notNull().default(500),
+    /** Verification results for work this PC did (as the checked or the checking PC). */
+    checksPassed: integer("checks_passed").notNull().default(0),
+    checksFailed: integer("checks_failed").notNull().default(0),
     status: nodeStatus("status").notNull().default("pending"),
     paused: boolean("paused").notNull().default(false),
     tariffPaisePerKwh: integer("tariff_paise_per_kwh").notNull().default(900),
@@ -258,6 +268,10 @@ export const fragments = pgTable(
     /** For verification and backup runs: the primary fragment they shadow. */
     parentFragmentId: uuid("parent_fragment_id"),
     status: fragmentStatus("status").notNull().default("pending"),
+    /** Primary fragments picked at confirm time to be re-run on a second PC once done. */
+    verify: boolean("verify").notNull().default(false),
+    /** Verification copies only: did its output agree with the copy it checked? */
+    verdict: checkVerdict("verdict"),
     /** GPU-seconds this fragment was priced at, on the job's node class. */
     estGpuSeconds: integer("est_gpu_seconds").notNull(),
     itemCount: integer("item_count").notNull(),

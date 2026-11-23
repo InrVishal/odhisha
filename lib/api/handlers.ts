@@ -1,13 +1,15 @@
 import { z } from "zod";
 import { deleteAccount, exportAccount } from "@/lib/account";
+import { isAdmin } from "@/lib/admin";
 import { AuthzError, type SessionUser } from "@/lib/auth/authz-error";
 import { SESSION_COOKIE_NAMES } from "@/lib/auth/sessions";
 import { audit } from "@/lib/audit";
 import { authenticateAgent, completeFragment, failFragment, failInput, heartbeat, heartbeatInput, leaseFragment, parsePowerHeaders } from "@/lib/coordinator/agent";
-import { CoordinatorError } from "@/lib/coordinator/errors";
+import { CoordinatorError, notFound } from "@/lib/coordinator/errors";
 import { cancelQuote, confirmJob, getJob, listJobs, openResults, quoteJob, quoteRequest, textQuoteRequest } from "@/lib/coordinator/jobs";
 import { getNode, listNodes, registerNode, registerNodeInput, revokeNode, rotateNodeToken, updateNode, updateNodeInput } from "@/lib/coordinator/nodes";
 import { maybeTick, runTick } from "@/lib/coordinator/tick";
+import { releaseFromQuarantine } from "@/lib/coordinator/verification";
 import { MAX_OUTPUT_BYTES, MAX_REQUEST_BYTES, WORKLOADS, type InputItem } from "@/lib/coordinator/workloads";
 import type { Db } from "@/lib/db/client";
 import { invoicePdf, loadInvoice } from "@/lib/invoice";
@@ -328,6 +330,23 @@ export function deleteAccountHandler(req: Request, d: UserDeps): Promise<Respons
       res.headers.append("Set-Cookie", `${name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${name.startsWith("__Secure-") ? "; Secure" : ""}`);
     }
     return res;
+  });
+}
+
+// ─── Admin ─────────────────────────────────────────────────────────────────
+
+/** Lets a quarantined PC take work again. Admins only; anyone else gets a 404. */
+export function releaseNodeHandler(req: Request, d: UserDeps, nodeId: string): Promise<Response> {
+  return handle(async () => {
+    assertSameOrigin(req);
+    const user = requireUser(d);
+    const limited = await limitOr429(d, "nodeManageUser", user.id);
+    if (limited) return limited;
+    if (!(await isAdmin(d.db, user.id)) || !z.uuid().safeParse(nodeId).success) throw notFound();
+    if (!(await releaseFromQuarantine(d.db, nodeId, user.id, d.ipSecret, clientIp(req.headers)))) {
+      throw new CoordinatorError(409, "not_quarantined", "That PC isn't quarantined.");
+    }
+    return json({ released: true });
   });
 }
 

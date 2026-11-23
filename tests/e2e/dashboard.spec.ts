@@ -78,6 +78,8 @@ test.describe("signed in (preview)", () => {
     await expect(page).toHaveURL(new RegExp(`/dashboard/jobs/${auth!.jobId}$`));
     await expect(page.getByText("Finished", { exact: true })).toBeVisible();
     await expect(page.getByText("1 / 1")).toBeVisible();
+    // The live test's second agent re-ran the piece on another PC.
+    await expect(page.getByRole("region", { name: "Checks" })).toContainText("1 matched.");
 
     const results = await page.request.get(await page.getByRole("link", { name: "Download results (JSON)" }).getAttribute("href").then((h) => h!));
     expect(results.status()).toBe(200);
@@ -133,6 +135,8 @@ test.describe("signed in (preview)", () => {
     await expect(pc).toContainText("65 W (estimated, CPU mode)");
     await expect(pc).toContainText("(RTX 3060 = 1000)");
     await expect(pc).toContainText("All day");
+    await expect(pc).toContainText("520 / 1000");
+    await expect(pc).toContainText("1 passed, 0 failed");
 
     await page.goto("/dashboard/earnings");
     const byPc = page.getByRole("region", { name: "Earnings by PC" });

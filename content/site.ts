@@ -37,7 +37,6 @@ export interface PageMeta {
 export const site = {
   name: "NightShift",
   tagline: "Idle GPUs, pooled overnight for AI jobs.",
-  demoBanner: "This is a working prototype. Payments, payouts and EMI are simulated (demo mode). No real money moves.",
   footer: {
     team: "Built by a small student team in India.",
     demo: "Demo mode: payments, UPI payouts and GPU EMI are simulated.",

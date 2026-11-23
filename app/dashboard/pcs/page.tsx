@@ -37,6 +37,13 @@ export default async function PcsPage() {
                   <span className="text-sm text-mist">Not taking work: {UNAVAILABLE[n.unavailableReason] ?? n.unavailableReason}</span>
                 ) : null}
               </div>
+              {n.status === "quarantined" ? (
+                <p className="mb-4 rounded border border-danger p-3 text-sm text-danger">
+                  This PC is paused by NightShift: its results didn&apos;t match other PCs&apos; when we re-ran its pieces, so its
+                  trust score fell below 200. It gets no work until we look into it. Pay for pieces that failed a check was
+                  taken back; everything else it earned stays.
+                </p>
+              ) : null}
               <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
                 <Item label="Kind" value={`${CLASS_SPECS[n.gpuClass].label}${n.gpuModel ? ` (${n.gpuModel})` : ""}`} />
                 <Item label="Benchmark" value={n.benchmarkScore === null ? "Runs on first start" : `${n.benchmarkScore} (RTX 3060 = 1000)`} />
@@ -45,6 +52,7 @@ export default async function PcsPage() {
                   value={n.measuredWatts === null ? `${n.defaultWatts} W (class default)` : `${n.measuredWatts} W${n.wattsEstimated ? " (estimated, CPU mode)" : " (measured)"}`}
                 />
                 <Item label="Trust score" value={`${n.trustScore} / 1000`} />
+                <Item label="Checks" value={`${n.checksPassed} passed, ${n.checksFailed} failed`} />
                 <Item label="Night window" value={`${windowText(n.nightWindowStartMin, n.nightWindowEndMin)} (${n.timezone})`} />
                 <Item label="Your rate" value={`${rupees(n.ownerRatePaisePerHr)} per hour`} />
                 <Item label="Your electricity tariff" value={`${rupees(n.tariffPaisePerKwh)} per kWh`} />
