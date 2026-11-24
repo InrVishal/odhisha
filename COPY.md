@@ -361,7 +361,7 @@ Fields: Email; I want to: Earn with my GPU / Run AI jobs / Both; checkbox: Email
 
 Button: "Join the waitlist". After sending: Done. If that email wasn't already on the list, it is now. We'll write when there's a spot for you.
 
-Errors: That email address doesn't look right. / Pick one option. / Tick the box so we're allowed to email you. / Too many tries from your network. Wait an hour and try again. / Something went wrong on our side. Try again in a minute.
+Errors: That email address doesn't look right. / Pick one option. / Tick the box so we're allowed to email you. / Too many tries from your network. Wait an hour and try again. / Joining is briefly unavailable. Try again in a few minutes. / Something went wrong on our side. Try again in a minute.
 
 ## Privacy (`/privacy`)
 
