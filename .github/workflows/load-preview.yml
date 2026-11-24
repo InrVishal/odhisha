@@ -6,9 +6,13 @@
 #   artifact encrypted to tools/load/hold.crt (the repo is public; only the
 #   machine with the matching private key can read it). Then k6 runs from a
 #   machine in India: bash tools/load/run-remote.sh (see that file).
-# Not on every push: one run uses ~24k Vercel function calls and several
-# Upstash commands per request. NEVER point previews at the Upstash database
-# production uses: on 2026-11-24 four runs used up its free monthly quota.
+# Not on every push: one run uses ~24k Vercel function calls and ~100k
+# Upstash commands (tools/load/upstash-budget.mjs). Previews have their own
+# Upstash database; on 2026-11-24, when they shared production's, four runs
+# used up its free monthly quota and took production's rate limits down
+# (docs/INCIDENTS.md). So before anything is created, this refuses unless no
+# Redis or database variable is shared with Production, the Preview Redis is
+# marked preview-only, and the run fits in 25% of its remaining month.
 #
 # What runs:
 # - a Neon branch load/pr-<n>-<run>, copied from the PR's preview branch
@@ -54,6 +58,21 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
       - run: npm ci
+
+      - name: Preview and Production share no Redis or database (Vercel variables, names and targets only)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: node scripts/check-env-isolation.mjs
+      - name: Preview environment (for its Redis)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: npx --yes vercel@66.5.0 pull --yes --environment=preview --token="$VERCEL_TOKEN"
+      - name: "Upstash: the Preview Redis is preview-only, and this run fits in 25% of what it has left this month"
+        id: budget
+        env:
+          UPSTASH_EMAIL: ${{ secrets.UPSTASH_EMAIL }}
+          UPSTASH_API_KEY: ${{ secrets.UPSTASH_API_KEY }}
+        run: node tools/load/upstash-guard.mjs .vercel/.env.preview.local
 
       - name: Branch expiry (3 hours from now)
         id: expiry
@@ -154,6 +173,13 @@ jobs:
           echo "ready at $(date -u +%H:%M:%SZ): run tools/load/run-remote.sh ${GITHUB_RUN_ID} now; cleanup at $(date -u -d '+20 minutes' +%H:%M:%SZ)"
           sleep 1200
 
+      - name: "Upstash: commands this run actually used"
+        if: always() && steps.budget.outputs.used_before != ''
+        env:
+          UPSTASH_EMAIL: ${{ secrets.UPSTASH_EMAIL }}
+          UPSTASH_API_KEY: ${{ secrets.UPSTASH_API_KEY }}
+          USED_BEFORE: ${{ steps.budget.outputs.used_before }}
+        run: node tools/load/upstash-guard.mjs .vercel/.env.preview.local --after "$USED_BEFORE" || true
       - name: Free-tier quota this run used
         if: always()
         env:

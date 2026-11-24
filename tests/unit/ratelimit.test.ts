@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCache } from "@/lib/env";
+import { setOpsAlertSink } from "@/lib/ops-alert";
 import {
+  FAIL_CLOSED,
   policyFor,
   withFallback,
   checkLimit,
@@ -101,26 +103,84 @@ describe("upstash backend", () => {
 });
 
 describe("when the shared limiter fails (e.g. Upstash quota used up)", () => {
-  it("falls back to an in-memory limiter: still limits, never throws", async () => {
+  const failing = async (): Promise<never> => {
+    throw new Error("ERR max requests limit exceeded");
+  };
+
+  it("agent and buyer limits fall back to the instance's own counter: still limits, never throws", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    const failing = async () => {
-      throw new Error("ERR max requests limit exceeded");
-    };
-    const l = withFallback("loginEmail", failing, new MemoryLimiter(POLICIES.loginEmail));
+    const degraded = vi.fn();
+    const p = POLICIES.agentNode;
+    const l = withFallback("agentNode", failing, new MemoryLimiter(p), { failClosed: false, policy: p, onDegraded: degraded });
     const results = [];
-    for (let i = 0; i < POLICIES.loginEmail.max + 1; i++) results.push((await l.limit("a@b.in")).success);
-    expect(results.slice(0, POLICIES.loginEmail.max).every(Boolean)).toBe(true);
+    for (let i = 0; i < p.max + 1; i++) results.push((await l.limit("token:abc")).success);
+    expect(results.slice(0, p.max).every(Boolean)).toBe(true);
     expect(results.at(-1)).toBe(false);
     expect(log).toHaveBeenCalledTimes(1);
-    expect(String(log.mock.calls[0]?.[0])).not.toContain("a@b.in");
+    expect(degraded).toHaveBeenCalledTimes(1);
+    expect(String(log.mock.calls[0]?.[0])).not.toContain("token:abc");
     log.mockRestore();
+  });
+
+  it("sign-in, login email, waitlist and admin-code limits fail closed: refused as unavailable (503), not counted per instance", async () => {
+    expect([...FAIL_CLOSED].sort()).toEqual(["adminMfaUser", "loginEmail", "loginIp", "waitlistIp"]);
+    for (const name of ["agentNode", "agentIp", "quoteUser", "jobSubmitUser"] as const) expect(FAIL_CLOSED.has(name)).toBe(false);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const degraded = vi.fn();
+    const p = POLICIES.loginEmail;
+    const l = withFallback("loginEmail", failing, new MemoryLimiter(p), { failClosed: true, policy: p, onDegraded: degraded });
+    const first = await l.limit("a@b.in");
+    expect(first).toMatchObject({ success: false, unavailable: true });
+    expect((await l.limit("a@b.in")).success).toBe(false);
+    expect(degraded).toHaveBeenCalledTimes(1);
+    expect(String(log.mock.calls[0]?.[0])).not.toContain("a@b.in");
+    const res = tooManyRequests(first);
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("30");
+    expect(await res.json()).toMatchObject({ error: "unavailable" });
+    log.mockRestore();
+  });
+
+  it("raises one owner alert per kind per instance (fail-closed and fallback are separate kinds)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubEnv("DATABASE_URL", "pglite:memory");
+    vi.stubEnv("AUTH_SECRET", "x".repeat(40));
+    vi.stubEnv("CRON_SECRET", "x".repeat(40));
+    vi.stubEnv("RATE_LIMIT_BACKEND", "upstash");
+    vi.stubEnv("UPSTASH_REDIS_REST_URL", "https://example.invalid");
+    vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "tok");
+    resetEnvCache();
+    resetLimiters();
+    const alerts: string[] = [];
+    setOpsAlertSink(async (kind) => {
+      alerts.push(kind);
+    });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new TypeError("fetch failed");
+    }) as typeof fetch;
+    try {
+      expect((await checkLimit("loginIp", "1.2.3.4")).unavailable).toBe(true);
+      expect((await checkLimit("loginEmail", "a@b.in")).unavailable).toBe(true);
+      expect((await checkLimit("agentNode", "token:x")).success).toBe(true);
+      expect((await checkLimit("quoteUser", "u1")).success).toBe(true);
+      expect(alerts.sort()).toEqual(["ratelimit_fail_closed", "ratelimit_fallback"]);
+    } finally {
+      globalThis.fetch = realFetch;
+      setOpsAlertSink(null);
+      vi.unstubAllEnvs();
+      resetEnvCache();
+      resetLimiters();
+      vi.restoreAllMocks();
+    }
   });
 });
 
 describe("AGENT_IP_LIMIT_PER_MIN (preview load test only)", () => {
   it("raises only the per-IP agent limit, and never in production", () => {
     const preview = { APP_ENV: "preview" as const, AGENT_IP_LIMIT_PER_MIN: 100_000 };
-    expect(policyFor("agentIp", preview)).toEqual({ max: 100_000, windowSec: 60 });
+    // Counted per instance: never in Upstash (it can't fire at this size anyway).
+    expect(policyFor("agentIp", preview)).toEqual({ max: 100_000, windowSec: 60, perInstance: true });
     for (const other of ["agentNode", "quoteUser", "jobSubmitUser", "loginIp", "accountUser"] as const) {
       expect(policyFor(other, preview)).toEqual(POLICIES[other]);
     }

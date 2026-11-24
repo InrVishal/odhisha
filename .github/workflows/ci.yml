@@ -10,7 +10,8 @@
 # Secrets (see SECURITY.md, "Secrets in CI"): VERCEL_TOKEN, VERCEL_ORG_ID,
 # VERCEL_PROJECT_ID, NEON_API_KEY, NEON_PROJECT_ID,
 # VERCEL_AUTOMATION_BYPASS_SECRET, and in the "production" environment:
-# PROD_DATABASE_URL_UNPOOLED, PROD_BASE_URL.
+# PROD_DATABASE_URL_UNPOOLED, PROD_BASE_URL. Optional: UPSTASH_EMAIL and
+# UPSTASH_API_KEY (Upstash Developer API, read-only) for the quota checks.
 #
 # Hardening: every job states its own permissions (the default is none);
 # no pull_request_target, so a fork's code never runs with secrets; jobs that
@@ -367,6 +368,11 @@ jobs:
           PREVIEW_DATABASE_URL: ${{ steps.neon.outputs.db_url }}
         run: npx tsx tests/live/db-exposure.ts
 
+      - name: Preview and Production share no Redis or database (Vercel variables, names and targets only)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: node scripts/check-env-isolation.mjs
+
       - name: Deploy preview (connects as app_runtime; admin reports as readonly)
         id: deploy
         env:
@@ -392,6 +398,11 @@ jobs:
         run: |
           node scripts/check-headers.mjs "$PREVIEW_URL"
           node scripts/smoke.mjs "$PREVIEW_URL"
+      - name: Upstash use this month (fails at 70% of any database's allowance)
+        env:
+          UPSTASH_EMAIL: ${{ secrets.UPSTASH_EMAIL }}
+          UPSTASH_API_KEY: ${{ secrets.UPSTASH_API_KEY }}
+        run: node scripts/upstash-usage.mjs --fail-at 0.7
 
       # Runs here because it needs this run's preview database (to create
       # the test owner and buyer sessions), which can't be passed to another job.
@@ -535,20 +546,44 @@ jobs:
         with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
       - run: npm ci
 
+      - name: Preview and Production share no Redis or database (Vercel variables, names and targets only)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: node scripts/check-env-isolation.mjs
+
       # The only place the owner (migrator) role's password is used.
       - name: Migrate production (see DEPLOY.md for rollback)
         run: npm run db:migrate
         env:
           DATABASE_URL: ${{ secrets.PROD_DATABASE_URL_UNPOOLED }}
+      - name: Mark the production database as production's (its Neon endpoint id; previews compare against it)
+        run: npx tsx scripts/mark-production-db.ts
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL_UNPOOLED }}
 
-      - name: Build and deploy to production
+      # Deployed without the production domain first, checked, then promoted:
+      # a build whose database or Redis is wrong (or shared with Preview)
+      # never takes traffic.
+      - name: Build and deploy to production (not live yet)
+        id: deploy
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           npx --yes vercel@66.5.0 pull --yes --environment=production --token="$VERCEL_TOKEN"
           npx --yes vercel@66.5.0 build --prod --token="$VERCEL_TOKEN"
           node scripts/scan-bundle.mjs --env-file .vercel/.env.production.local .vercel/output/static .next/static .next/server/app
-          npx --yes vercel@66.5.0 deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+          url=$(npx --yes vercel@66.5.0 deploy --prebuilt --prod --skip-domain --token="$VERCEL_TOKEN")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+      - name: The new production deployment is healthy (database and Redis reachable and its own)
+        env:
+          DEPLOY_URL: ${{ steps.deploy.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: node scripts/check-deployment.mjs "$DEPLOY_URL"
+      - name: Promote it (now it serves the production domain)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          DEPLOY_URL: ${{ steps.deploy.outputs.url }}
+        run: npx --yes vercel@66.5.0 promote "$DEPLOY_URL" --yes --token="$VERCEL_TOKEN"
 
       - name: Security headers and smoke test on production (read-only)
         env:
@@ -556,6 +591,11 @@ jobs:
         run: |
           node scripts/check-headers.mjs "$PROD_BASE_URL"
           node scripts/smoke.mjs "$PROD_BASE_URL"
+      - name: Upstash use this month (fails at 70% of any database's allowance)
+        env:
+          UPSTASH_EMAIL: ${{ secrets.UPSTASH_EMAIL }}
+          UPSTASH_API_KEY: ${{ secrets.UPSTASH_API_KEY }}
+        run: node scripts/upstash-usage.mjs --fail-at 0.7
 
       - name: Lighthouse on production (includes the SEO crawlability audit)
         env:

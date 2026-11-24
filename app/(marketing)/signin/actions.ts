@@ -12,6 +12,8 @@ export interface SignInState {
   error?: string;
 }
 
+const UNAVAILABLE = "Logging in is briefly unavailable. Try again in a few minutes.";
+
 const emailSchema = z.strictObject({
   email: z.string().trim().toLowerCase().max(254).pipe(z.email()),
 });
@@ -21,7 +23,7 @@ export async function signInWithEmail(_prev: SignInState, formData: FormData): P
   if (!parsed.success) return { error: "That email address doesn't look right." };
 
   const r = await checkLimit("loginIp", clientIp(await headers()));
-  if (!r.success) return { error: "Too many login attempts. Wait a few minutes and try again." };
+  if (!r.success) return { error: r.unavailable ? UNAVAILABLE : "Too many login attempts. Wait a few minutes and try again." };
 
   try {
     // On success this throws a redirect to /signin/check-email, which must

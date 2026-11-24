@@ -49,6 +49,8 @@ const RUNTIME: Record<string, Expect> = {
   admin_totp: R(true, true, ["enabled_at", "last_step"], false),
   alert_sent: R(true, true, ["status", "attempts"], false),
   canary_cover: R(true, true, ["status", "canary_fragment_id", "settled_at"], false),
+  // Read only: written by production's deploy step as the owner (lib/isolation.ts).
+  deployment_marker: R(true, false, false, false),
 };
 
 const READONLY_TABLES = ["node", "job", "owner_ledger", "buyer_ledger", "credit_ledger", "audit_log", "canary_cover"];

@@ -108,6 +108,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth(async () => {
         // the route handler and the sign-in server action).
         if (email?.verificationRequest && user.email) {
           const r = await checkLimit("loginEmail", user.email.toLowerCase());
+          // Shared limiter down: no login email (fails closed, lib/ratelimit.ts).
+          if (r.unavailable) return "/signin?error=Unavailable";
           if (!r.success) {
             await audit(db, { actorId: null, actorType: "user", action: "auth.login_rate_limited", ip: await requestIp() }, ipHashSecret());
             return "/signin?error=RateLimited";

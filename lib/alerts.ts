@@ -2,6 +2,7 @@ import { and, asc, eq, gte, inArray, notExists, or, sql } from "drizzle-orm";
 import type { Db } from "@/lib/db/client";
 import { alertSent, auditLog } from "@/lib/db/schema";
 import type { Env } from "@/lib/env";
+import { describeOpsAlert } from "@/lib/ops-alert";
 
 /**
  * Security alerts by email: every change to an account's role (allowed or
@@ -10,7 +11,7 @@ import type { Env } from "@/lib/env";
  * The email has account ids only, no addresses or IPs.
  */
 
-export const ALERT_ACTIONS = ["admin.role_changed", "admin.role_change_refused", "admin.mfa_enrolled"] as const;
+export const ALERT_ACTIONS = ["admin.role_changed", "admin.role_change_refused", "admin.mfa_enrolled", "ops.alert"] as const;
 const PER_TICK = 20;
 /** A failing alert is tried this many times, then left (it stays in the audit log). */
 export const ALERT_MAX_ATTEMPTS = 5;
@@ -54,6 +55,16 @@ export function alertConfig(env: Env): AlertConfig {
 function describe(row: typeof auditLog.$inferSelect): { subject: string; text: string } {
   const meta = (row.meta ?? {}) as Record<string, unknown>;
   const when = row.at.toISOString();
+  if (row.action === "ops.alert") {
+    return {
+      subject: `NightShift alert: ${String(row.targetId)}`,
+      text: `${describeOpsAlert(String(row.targetId))}
+
+First noticed: ${when}
+
+See docs/INCIDENTS.md and the Vercel function logs ([ops-alert] lines).`,
+    };
+  }
   if (row.action === "admin.mfa_enrolled") {
     return {
       subject: "NightShift security alert: a new admin authenticator was set up",

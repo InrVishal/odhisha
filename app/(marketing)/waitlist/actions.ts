@@ -32,7 +32,7 @@ export async function joinWaitlistAction(_prev: WaitlistState, formData: FormDat
   }
 
   const r = await checkLimit("waitlistIp", clientIp(await headers()));
-  if (!r.success) return { status: "error", errors: { form: copy.errors.rateLimited } };
+  if (!r.success) return { status: "error", errors: { form: r.unavailable ? copy.errors.unavailable : copy.errors.rateLimited } };
 
   try {
     await joinWaitlist(await getDb(), parsed.data);

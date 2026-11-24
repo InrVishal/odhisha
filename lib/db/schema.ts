@@ -519,6 +519,19 @@ export const auditLog = pgTable(
   (t) => [index("audit_actor_idx").on(t.actorId, t.at), index("audit_action_idx").on(t.action, t.at)],
 );
 
+// ─── Which environment this database belongs to ───────────────────────────
+
+/**
+ * Written only by production's deploy step (scripts/mark-production-db.ts,
+ * owner role): name "production_endpoint", value production's Neon endpoint
+ * id. The app only reads it (lib/isolation.ts).
+ */
+export const deploymentMarker = pgTable("deployment_marker", {
+  name: varchar("name", { length: 64 }).primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+});
+
 // ─── Admin second factor and alerts ───────────────────────────────────────
 
 /**

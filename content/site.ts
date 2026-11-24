@@ -427,6 +427,7 @@ export const waitlist = {
     interest: "Pick one option.",
     consent: "Tick the box so we're allowed to email you.",
     rateLimited: "Too many tries from your network. Wait an hour and try again.",
+    unavailable: "Joining is briefly unavailable. Try again in a few minutes.",
     generic: "Something went wrong on our side. Try again in a minute.",
   },
 };

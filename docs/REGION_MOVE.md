@@ -21,7 +21,9 @@ world and back before any of our code runs.
 - **Rate limiter: a new Upstash database in `ap-southeast-1` for production,
   and a separate one for previews and load tests.** Sharing one between
   preview and production is how the free monthly quota (500,000 commands) was
-  used up on 2026-11-24.
+  used up on 2026-11-24 (docs/INCIDENTS.md). If the replacements created that
+  day are in a US region, these Singapore ones replace them; connect each to
+  one environment only (CI refuses a shared one).
 
 The three must move together: functions in Singapore talking to a database in
 Ohio would be the worst of both.
@@ -42,8 +44,9 @@ Ohio would be the worst of both.
    ```
    It refuses a non-empty target, runs the app's migrations on the new
    project (schema, `app_runtime`/`readonly` roles, grants, triggers), copies
-   every row in one transaction, then compares every table's row count. The
-   old project is not touched.
+   every row in one transaction, then compares every table's row count and
+   content checksums, and marks the new project as production's database
+   (`deployment_marker`, lib/isolation.ts). The old project is not touched.
 5. **Switch over:**
    - Neon (new project, SQL editor): set the `app_runtime` and `readonly`
      passwords (SECURITY.md, "Database roles", step 2).

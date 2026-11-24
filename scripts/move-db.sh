@@ -77,4 +77,11 @@ a=$(echo "$sums" | psqlc "$OLD_URL")
 b=$(echo "$sums" | psqlc "$NEW_URL")
 [ "$a" = "$b" ] || { echo "move-db: content checksums differ (blobs, ledgers or pieces); production is unchanged, stop and check"; exit 1; }
 echo "  ok   checksums of blobs, owner/buyer/credit ledgers and piece hashes match"
+# 6. The new project is production's now: its marker names its own Neon
+#    endpoint (the copy carried the old project's; lib/isolation.ts).
+ep=$(node -e 'const h=new URL(process.argv[1]).hostname.split(".")[0]; process.stdout.write(/^ep-[a-z0-9-]+$/.test(h) ? h.replace(/-pooler$/, "") : "")' "$NEW_URL")
+if [ -n "$ep" ]; then
+  echo "insert into public.deployment_marker (name, value, updated_at) values ('production_endpoint', '$ep', now()) on conflict (name) do update set value = excluded.value, updated_at = now();" | psqlc "$NEW_URL" >/dev/null
+  echo "  ok   the new project is marked as production's database (endpoint $ep)"
+fi
 echo "move-db: every table matches. Next: docs/REGION_MOVE.md step 5 (switch Vercel and GitHub to the new project)."

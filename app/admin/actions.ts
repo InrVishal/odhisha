@@ -33,7 +33,7 @@ export async function submitAdminCodeAction(_prev: CodeState, formData: FormData
   if (access.state === "not_admin") notFound();
   if (access.state === "stale_login") return { error: STALE };
   const limited = await checkLimit("adminMfaUser", access.userId);
-  if (!limited.success) return { error: "Too many tries. Wait 15 minutes and try again." };
+  if (!limited.success) return { error: limited.unavailable ? "Admin codes are briefly unavailable. Try again in a few minutes." : "Too many tries. Wait 15 minutes and try again." };
   const parsed = codeInput.safeParse({ code: formField(formData, "code") });
   if (!parsed.success) return { error: "Enter the 6-digit code from your authenticator app." };
   const env = getEnv();

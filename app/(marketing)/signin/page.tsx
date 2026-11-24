@@ -6,6 +6,7 @@ import { SignInForm } from "./signin-form";
 
 const ERRORS: Record<string, string> = {
   RateLimited: "Too many login links sent to that address. Wait 15 minutes and try again.",
+  Unavailable: "Logging in is briefly unavailable. Try again in a few minutes.",
   AccessDenied: "We couldn't log you in with that account.",
   Verification: "That link has expired or was already used. Ask for a new one.",
 };

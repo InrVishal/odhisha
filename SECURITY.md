@@ -125,6 +125,8 @@ Nothing below is ever `NEXT_PUBLIC_`: env validation refuses secret-looking publ
 | `RATE_LIMIT_BACKEND` | rate limiter | yes | no | — |
 | `UPSTASH_REDIS_REST_URL` / `_TOKEN`, or `KV_REST_API_URL` / `KV_REST_API_TOKEN` | rate limits (Upstash via the Vercel integration) | yes | token: yes | Upstash → reset the token → it syncs to Vercel → redeploy |
 | `KV_URL`, `REDIS_URL`, `KV_REST_API_READ_ONLY_TOKEN` | set by the Upstash integration, not used by the app | yes | yes | as above |
+
+**Preview and Production each have their own Upstash database and Neon database, never one shared** (docs/INCIDENTS.md, 2026-11-24). Connect each Upstash store to one environment only. CI refuses to deploy otherwise (`scripts/check-env-isolation.mjs`), and each Redis and the production database carry an owner marker the app checks (`lib/isolation.ts`).
 | `CRON_SECRET` | `/api/cron/tick` | yes | yes | new random 32+ chars in Vercel (Vercel Cron reads it), redeploy |
 | `COORDINATOR_SIGNING_KEY` | signs agent tasks (Ed25519) | yes | yes | new key, Vercel, redeploy; agents pick up the new public key from `/api/agent/signing-key` (the kid changes) |
 | `DATA_ENCRYPTION_KEY` | wraps per-piece job keys; seals TOTP secrets | yes | yes | not rotated in place yet: changing it makes stored job data (≤ 7 days) and admin authenticators unreadable. Rotate after a quiet week, then reset admin authenticators |
@@ -154,6 +156,8 @@ Nothing below is ever `NEXT_PUBLIC_`: env validation refuses secret-looking publ
 - Every job states its own permissions; the workflow default is none. Only the image build can write packages; only CodeQL can write security events.
 - Checkouts don't keep the GitHub token (`persist-credentials: false`). Every action is pinned by commit SHA; every downloaded tool (gitleaks, Trivy, k6) is checked against its release checksums.
 - Workflow expressions are passed to scripts through `env:`, never written into the script. `zizmor` audits the workflows on every run.
+- `UPSTASH_EMAIL` and `UPSTASH_API_KEY` (optional; a **read-only** Upstash Management API key) let CI read each Upstash database's monthly command count: the quota watch (every 6 h, fails at 70%), the smoke-test steps, and the load-test budget. Without them the load test refuses to run.
+- Production deploys are staged: `vercel deploy --prod --skip-domain`, then `/api/health` on the new deployment (`scripts/check-deployment.mjs`), then `vercel promote`.
 
 ## Lockdown checks (Phase 8)
 
@@ -197,7 +201,7 @@ Nothing below is ever `NEXT_PUBLIC_`: env validation refuses secret-looking publ
 - **Checks happen after the job finishes**, so a buyer may already have downloaded a piece that is later corrected. The job page says so and the corrected result is downloadable.
 
 - **A node sees the plaintext of the fragment it computes.** Encryption at rest protects stored data, not data while a GPU works on it. Splitting jobs into fragments limits how much of a job any one node sees. It does not hide that fragment. Don't send data you can't let a stranger's PC see.
-- **The in-memory rate limiter** (dev only) is per process. Deployed environments must use Upstash, and env validation enforces it.
+- **The in-memory rate limiter** is per process. Deployed environments must use Upstash, and env validation enforces it. If Upstash fails, sign-in, login emails, the waitlist and admin codes fail closed (503). Agent and buyer limits fall back to per-instance counters, so during an outage an attacker gets one allowance per server instance on those. Either way the owner is emailed at once (`ops.alert`).
 - **Client IP for rate limits** comes from `x-real-ip` / `x-forwarded-for`. On Vercel these are set by the platform. Anywhere else, a client can spoof them.
 - **Sessions on other devices** stay valid after a new login, until they expire (7 days). "Log out of all devices" on the dashboard ends them all at once.
 - **Account takeover is the realistic way in.** An attacker with the admin's email inbox can log in by magic link, and the first time also set up the authenticator (the setup emails the admins). Turn on 2FA on the email account and on GitHub, Vercel, Neon, Google, Resend and Upstash: whoever controls those controls the app. Passkeys aren't offered yet; TOTP is.

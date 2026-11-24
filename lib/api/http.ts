@@ -3,7 +3,7 @@ import { AuthzError } from "@/lib/auth/authz-error";
 import { CoordinatorError } from "@/lib/coordinator/errors";
 import { WorkloadInputError } from "@/lib/coordinator/workloads";
 import type { LimitResult } from "@/lib/ratelimit";
-import { retryAfterSeconds } from "@/lib/ratelimit";
+import { limiterUnavailable, retryAfterSeconds } from "@/lib/ratelimit";
 
 /**
  * Shared HTTP plumbing for the JSON API. Errors map to a small set of stable
@@ -22,6 +22,7 @@ export function errorJson(status: number, code: string, message: string, headers
 }
 
 export function rateLimited(result: LimitResult): Response {
+  if (result.unavailable) return limiterUnavailable();
   return errorJson(429, "rate_limited", "Too many requests. Try again shortly.", {
     "Retry-After": String(retryAfterSeconds(result)),
   });

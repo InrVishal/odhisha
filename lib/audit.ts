@@ -36,6 +36,8 @@ export const AUDIT_ACTIONS = [
   "canary.cover_failed",
   "account.exported",
   "account.deleted",
+  /** Degraded operation the owner must hear about now (lib/ops-alert.ts); target_id is the kind. */
+  "ops.alert",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
