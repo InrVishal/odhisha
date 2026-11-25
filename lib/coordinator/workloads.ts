@@ -99,7 +99,7 @@ export const WORKLOADS: { readonly [K in WorkloadType]: WorkloadSpec } = {
     type: "text_embeddings",
     label: "Batch text embeddings",
     itemKind: "text",
-    image: "ghcr.io/inrvishal/nightshift-text-embeddings@sha256:6462549dc331c43a76c90c28920babef486e86c6aa22475a3b6ed0a77a6419d8",
+    image: "ghcr.io/inrvishal/nightshift-text-embeddings@sha256:e6cdda62e7101dd9aa0f6b45195115a88cbd602215d10fe086faf8614544481a",
     params: embeddingParams,
     limits: {
       maxItems: 5000,
@@ -118,7 +118,7 @@ export const WORKLOADS: { readonly [K in WorkloadType]: WorkloadSpec } = {
     type: "image_captioning",
     label: "Batch image captioning",
     itemKind: "image",
-    image: "ghcr.io/inrvishal/nightshift-image-captioning@sha256:86b1ea14a4d3370737b8285aec759434713743a657a017d78173627fa88dc818",
+    image: "ghcr.io/inrvishal/nightshift-image-captioning@sha256:ad181e1049b787adebde5d4eae3ffdae88c49431dfd2763245541a16b013cad2",
     params: captionParams,
     limits: {
       maxItems: 200,
@@ -141,7 +141,7 @@ export const WORKLOADS: { readonly [K in WorkloadType]: WorkloadSpec } = {
     type: "image_resize",
     label: "Batch image resizing",
     itemKind: "image",
-    image: "ghcr.io/inrvishal/nightshift-image-resize@sha256:53e1757d9c9f6f6acf6009108e18a54b37572ecfb6024c00049720b7e7cde0c1",
+    image: "ghcr.io/inrvishal/nightshift-image-resize@sha256:f4cef7bda40d6c7e4dc2fbcca5736ad582c07f516d900e25791e6e0e676820a7",
     params: resizeParams,
     limits: {
       maxItems: 200,
@@ -236,6 +236,17 @@ export function encodeFragmentInput(items: readonly InputItem[]): Buffer {
  * Estimated seconds for one fragment on a machine with this benchmark score.
  * Overhead is fixed; per-item time scales with the benchmark (RTX 3060 = 1000).
  */
+/**
+ * The Time-Bank unit: what a piece of work is worth in standard GPU-seconds,
+ * i.e. how long the reference GPU (RTX 3060, score 1000) takes for it. It
+ * depends only on the work (workload and item count), never on which PC ran
+ * it or how long that PC took, so a slow PC can't earn more for the same
+ * work and a CPU piece costs the same as a GPU piece of the same size.
+ */
+export function standardWorkSeconds(spec: WorkloadSpec, itemCount: number): number {
+  return estimateSeconds(spec, itemCount, BASELINE_BENCHMARK_SCORE);
+}
+
 export function estimateSeconds(spec: WorkloadSpec, itemCount: number, benchmark: number): number {
   const b = Math.max(1, benchmark);
   return spec.cost.overheadSec + Math.ceil((itemCount * spec.cost.perItemMsAtBaseline * BASELINE_BENCHMARK_SCORE) / b / 1000);

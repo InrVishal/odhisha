@@ -111,7 +111,26 @@ export default async function JobPage({ params }: PageProps<"/dashboard/jobs/[id
               ) : null}
               {job.checks.inconclusive ? <li>{job.checks.inconclusive} couldn&apos;t be settled: three PCs gave three different results.</li> : null}
               {job.checks.waiting ? <li>{job.checks.waiting} waiting for a second PC to be free. This never delays your job.</li> : null}
+              {job.canaryOnly.waiting ? (
+                <li>
+                  {job.canaryOnly.waiting} couldn&apos;t go to anyone else&apos;s PC: every PC that could check it belongs to the same
+                  person, device or network as the one that ran it. Instead, that PC is being tested with pieces whose answer we
+                  already know. Its owner isn&apos;t paid for the piece until it passes.
+                </li>
+              ) : null}
+              {job.canaryOnly.passed ? <li>{job.canaryOnly.passed} checked that way: the PC that ran it passed a known-answer test.</li> : null}
+              {job.canaryOnly.failed ? (
+                <li>
+                  {job.canaryOnly.failed}: the PC that ran it failed a known-answer test, so its owner isn&apos;t paid for it. We
+                  couldn&apos;t check that piece&apos;s result another way: treat it with care, or run those items again.
+                </li>
+              ) : null}
             </ul>
+            <p className="mt-3 text-sm text-mist">
+              {job.canaryReuse
+                ? "Checked pieces of this job may be reused as known-answer tests for other PCs until your data is deleted."
+                : "You chose: pieces of this job are never reused as known-answer tests."}
+            </p>
           </Card>
         </div>
       ) : null}

@@ -124,10 +124,12 @@ describe("site copy", () => {
     expect(content.pricing.calculatorNote).toMatch(/simulated/);
   });
 
-  it("says Time-Bank credits are standard GPU-hours, the same for every GPU for now, verified first, expiring, and not cashable", () => {
+  it("says Time-Bank credits are standard GPU-hours of work (not hours), verified first, expiring, and not cashable", () => {
     const tb = content.timeBank.sections.flatMap((s) => s.body).join(" ");
     expect(tb).toMatch(/standard GPU-hours/);
-    expect(tb).toMatch(/every GPU earns the same: one standard GPU-hour for each hour of verified work/);
+    expect(tb).toMatch(/count the work your PC does, not the hours it takes/);
+    expect(tb).toMatch(/the same work always earns the same/);
+    expect(tb).toMatch(/known-answer test/);
     expect(tb).not.toMatch(/benchmark/);
     expect(tb).toMatch(/wait until the work is verified/);
     expect(tb).toMatch(/expire 6 months/);

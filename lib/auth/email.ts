@@ -21,6 +21,11 @@ export async function sendMagicLink(env: Env, to: string, url: string): Promise<
     console.info(`[dev email] login link for ${to}:\n${url}`);
     return;
   }
+  if (env.APP_ENV === "preview" && !env.PREVIEW_EMAIL_ALLOWLIST.includes(to.trim().toLowerCase())) {
+    // No address in the log: it's personal data, and a scanner's junk anyway.
+    console.info("[email] preview: login link not sent (address is not on PREVIEW_EMAIL_ALLOWLIST)");
+    return;
+  }
 
   // Plain text only: no HTML means no tracking pixels and nothing to escape.
   const res = await fetch("https://api.resend.com/emails", {

@@ -36,9 +36,16 @@ The copy describes the finished prototype. Each phase ticks off what it delivers
 - [x] **Phase 7:** Canaries that look like real work: re-runs of verified real pieces (proof: `tests/integration/canary.test.ts (classifier at chance)`)
 - [x] **Phase 7:** New and low-trust PCs checked on half their pieces (proof: `tests/unit/check-rate.test.ts, tests/integration/attacks.test.ts`)
 - [x] **Phase 7:** One payout UPI ID per account; shared devices and networks flagged and kept from checking each other (proof: `tests/integration/attacks.test.ts, tests/live/agent-preview.ts (flags raised)`)
-- [ ] **Phase 8:** Sentry error reports with personal details removed
+- [x] **Phase 8:** Admin needs the database role and the ADMIN_EMAILS allowlist, a login from the last 15 minutes and an authenticator code; anyone else gets a 404 (proof: `tests/integration/admin.test.ts, tests/e2e/dashboard.spec.ts, scripts/smoke.mjs`)
+- [x] **Phase 8:** The app runs as a least-privilege database role that can't change roles, the schema or the ledgers (proof: `tests/integration/db-roles.test.ts, tests/live/db-exposure.ts`)
+- [x] **Phase 8:** No secrets or source maps in anything a browser downloads; no exposed config files (proof: `scripts/scan-bundle.mjs, scripts/smoke.mjs`)
+- [x] **Phase 8:** Canary-only verification where no independent PC exists (pay held until a canary passes, no trust gain) (proof: `tests/integration/canary-only.test.ts`)
+- [x] **Phase 8:** Time-Bank credits earned per verified unit of work, not per second (proof: `tests/integration/timebank.test.ts`)
+- [x] **Phase 8:** Buyers can opt out of their pieces being reused as known-answer canaries (proof: `tests/integration/canary-only.test.ts`)
+- [x] **Phase 8:** p95 under 300 ms at 200 virtual users on quote, lease, heartbeat and hand-in (proof: `tools/load/k6-load.js (CI job 9)`)
+- [ ] **Phase 9:** Sentry error reports with personal details removed
 
-Done: 27 of 29.
+Done: 34 of 36.
 
 **Still open from you:** set `CONTACT_EMAIL` in Vercel so the privacy page can show a real address.
 
@@ -266,17 +273,17 @@ Time-Bank is for students. Your PC works for the network at night and earns cred
 
 Switch your PC to earn credits in your dashboard. Its pieces of other people's jobs then earn credits instead of pay for GPU time. Your electricity is still paid back in rupees.
 
-Credits are counted in standard GPU-hours. For now every GPU earns the same: one standard GPU-hour for each hour of verified work. Faster GPUs will earn more once our speed scores are checked against a real RTX 3060.
+Credits count the work your PC does, not the hours it takes. They're in standard GPU-hours: one is the work an RTX 3060 does in an hour. So a faster GPU earns more in a night, a slower one less, and the same work always earns the same.
 
-Your hostel PC running from midnight to 6 AM earns 6 standard GPU-hours.
+An RTX 3060 working from midnight to 6 AM earns about 6 standard GPU-hours.
 
-New credits wait until the work is verified. Either its check matched, or it wasn't picked for a check and a day has passed with your PC in good standing.
+New credits wait until the work is verified. Either its check matched; or nobody else's PC could check it and your PC then passed a known-answer test; or it wasn't picked for a check and a day has passed with your PC in good standing.
 
 ### Spending credits
 
 Pick "Pay with Time-Bank credits" on a quote. Your job's pieces run in parallel on as many GPUs as are free, so a big batch finishes fast. That's your temporary cluster.
 
-A job costs its GPU-hours plus the 12% verification buffer. For example, a 12 GPU-hour job during a hackathon (4 GPUs for 3 hours) costs 13.44 standard GPU-hours.
+A job costs the work in it, in standard GPU-hours, plus the 12% verification buffer. For example, a job with 12 standard GPU-hours of work during a hackathon (4 GPUs for 3 hours) costs 13.44 standard GPU-hours.
 
 Your job runs on the same approved job types as everyone else's.
 
@@ -354,7 +361,7 @@ Fields: Email; I want to: Earn with my GPU / Run AI jobs / Both; checkbox: Email
 
 Button: "Join the waitlist". After sending: Done. If that email wasn't already on the list, it is now. We'll write when there's a spot for you.
 
-Errors: That email address doesn't look right. / Pick one option. / Tick the box so we're allowed to email you. / Too many tries from your network. Wait an hour and try again. / Something went wrong on our side. Try again in a minute.
+Errors: That email address doesn't look right. / Pick one option. / Tick the box so we're allowed to email you. / Too many tries from your network. Wait an hour and try again. / Joining is briefly unavailable. Try again in a few minutes. / Something went wrong on our side. Try again in a minute.
 
 ## Privacy (`/privacy`)
 
@@ -384,7 +391,7 @@ To log you in, run your jobs, pay owners, keep the network safe, and email you a
 
 PCs on the network see the piece of a job they work on, in plain form, while they work on it.
 
-To check that PCs are honest, a piece of your job may be run again on one or two other PCs, while your job's data still exists (up to 7 days after it ends).
+To check that PCs are honest, a piece of your job may be run again on one or two other PCs. Once it's checked, it may also go to one more PC as a known-answer test. Both only happen while your job's data still exists (up to 7 days after it ends). You can turn the known-answer reuse off when you quote a job.
 
 Our service providers store or process data for us: Vercel (hosting), Neon (database), Upstash (rate limiting), Resend (login emails) and Sentry (error reports, with personal details removed).
 

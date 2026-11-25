@@ -1,0 +1,29 @@
+# Every 6 hours: Upstash command use this month for every database (Developer
+# API; it costs no Redis commands). Fails at 70% of any database's monthly
+# allowance; GitHub then emails the owner. Rate limits break at 100%: on
+# 2026-11-24 they did (docs/INCIDENTS.md).
+# Needs the secrets UPSTASH_EMAIL and UPSTASH_API_KEY (a read-only key from
+# console.upstash.com -> Account -> Management API); fails until they're set.
+name: Quota watch
+on:
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+permissions: {}
+jobs:
+  upstash:
+    name: Upstash use this month (alert at 70%)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "22" }
+      - name: Upstash use this month
+        env:
+          UPSTASH_EMAIL: ${{ secrets.UPSTASH_EMAIL }}
+          UPSTASH_API_KEY: ${{ secrets.UPSTASH_API_KEY }}
+        run: node scripts/upstash-usage.mjs --fail-at 0.7 --require-creds

@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { EMI_DEFAULTS, EmiInputError, emiPaise, MAX_PAYOFF_MONTHS, monthInterestPaise, monthlyEarnings, simulateEmi, type EmiInput } from "@/lib/emi";
-import { powerCostPerHourPaise } from "@/lib/pricing";
+import { EMI_DEFAULTS, EmiInputError, emiPaise, MAX_PAYOFF_MONTHS, monthInterestPaise, monthlyEarnings, simulateEmi, UTILISATION_SCENARIOS, utilisationScenarios, type EmiInput } from "@/lib/emi";
+import { DEFAULT_OWNER_RATE_PAISE_PER_HR, powerCostPerHourPaise } from "@/lib/pricing";
 
 const base: EmiInput = {
   gpuClass: "rtx3060",
@@ -135,7 +135,37 @@ describe("earnings, with electricity taken out first", () => {
     expect(MAX_PAYOFF_MONTHS).toBe(120);
   });
 
-  it("defaults are the documented ones", () => {
-    expect(EMI_DEFAULTS).toMatchObject({ annualRateBps: 1500, months: 12, hoursPerNight: 8, nightsPerMonth: 30, utilisationPct: 50, ownerRatePaisePerHr: 2500, tariffPaisePerKwh: 900 });
+  it("defaults are the documented ones: 40% of night hours with work, and the pricing page's owner rate", () => {
+    expect(EMI_DEFAULTS).toMatchObject({ annualRateBps: 1500, months: 12, hoursPerNight: 8, nightsPerMonth: 30, utilisationPct: 40, ownerRatePaisePerHr: 2500, tariffPaisePerKwh: 900 });
+    expect(EMI_DEFAULTS.ownerRatePaisePerHr).toBe(DEFAULT_OWNER_RATE_PAISE_PER_HR);
+  });
+
+  it("at the defaults (40%): ₹2,400 a month after ₹276.48 of electricity, 102% of the EMI, paid off in 12 months", () => {
+    const r = simulateEmi({ ...base, utilisationPct: EMI_DEFAULTS.utilisationPct });
+    expect(r.earnings.workSeconds).toBe(96 * 3600);
+    expect(r.earnings.electricityPaise).toBe(27_648);
+    expect(r.earnings.netPaise).toBe(240_000);
+    expect(r.coveredPct).toBe(102);
+    expect(r.monthsToPayoff).toBe(12);
+  });
+
+  it("payoff is shown at 20%, 40% and 70% of night hours: 24, 12 and 7 months", () => {
+    expect(UTILISATION_SCENARIOS).toEqual([20, 40, 70]);
+    const s = utilisationScenarios(base);
+    expect(s.map((x) => [x.utilisationPct, x.netPaise, x.coveredPct, x.monthsToPayoff])).toEqual([
+      [20, 120_000, 51, 24],
+      [40, 240_000, 102, 12],
+      [70, 420_000, 178, 7],
+    ]);
+    // More work never makes payoff slower.
+    fc.assert(
+      fc.property(fc.integer({ min: 0, max: 100 }), fc.integer({ min: 0, max: 100 }), (a, b) => {
+        const [lo, hi] = utilisationScenarios(base, [Math.min(a, b), Math.max(a, b)]);
+        expect(hi!.netPaise).toBeGreaterThanOrEqual(lo!.netPaise);
+        if (lo!.monthsToPayoff !== null) expect(hi!.monthsToPayoff).not.toBeNull();
+        if (lo!.monthsToPayoff !== null && hi!.monthsToPayoff !== null) expect(hi!.monthsToPayoff).toBeLessThanOrEqual(lo!.monthsToPayoff);
+      }),
+      { numRuns: 300 },
+    );
   });
 });

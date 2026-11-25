@@ -1,7 +1,9 @@
 import { and, eq, inArray, isNull, lt } from "drizzle-orm";
 import type { Db } from "@/lib/db/client";
 import { fragments, jobs, locks, nodes } from "@/lib/db/schema";
+import { sendSecurityAlerts, type AlertConfig } from "@/lib/alerts";
 import { clawBackUnverifiedJob, expireCredits } from "@/lib/credits";
+import { coverUncheckablePieces } from "./canary-only";
 import { markMissedDeadlines, requeueLeased } from "./lifecycle";
 import { HEARTBEAT_TIMEOUT_SEC, needsBackup } from "./schedule";
 import { deleteJobBlobs } from "./store";
@@ -32,9 +34,19 @@ export interface TickReport {
   jobsPurged: number;
   /** Time-Bank credit-seconds that reached 6 months and expired. */
   creditsExpired: number;
+  /** Checks no independent PC can run, switched to canary-only verification. */
+  canaryOnly: number;
+  /** Security alerts emailed. */
+  alertsSent: number;
 }
 
-const EMPTY: TickReport = { ran: false, leasesExpired: 0, nodesOffline: 0, backupsStarted: 0, deadlinesMissed: 0, quotesExpired: 0, jobsPurged: 0, creditsExpired: 0 };
+export interface TickOptions {
+  alerts?: AlertConfig;
+  /** Same as the leasing rule: "report" (previews) lets same-device/network PCs check each other. */
+  sybil?: "enforce" | "report";
+}
+
+const EMPTY: TickReport = { ran: false, leasesExpired: 0, nodesOffline: 0, backupsStarted: 0, deadlinesMissed: 0, quotesExpired: 0, jobsPurged: 0, creditsExpired: 0, canaryOnly: 0, alertsSent: 0 };
 
 /**
  * Takes the named lock if it's free or expired. One statement, so two
@@ -51,12 +63,12 @@ export async function tryLock(db: Db, name: string, now: Date, holdSec: number):
 }
 
 /** Runs the tick unless one ran in the last TICK_EVERY_SEC. */
-export async function maybeTick(db: Db, now: Date, ipSecret: string): Promise<TickReport> {
+export async function maybeTick(db: Db, now: Date, ipSecret: string, opts: TickOptions = {}): Promise<TickReport> {
   if (!(await tryLock(db, "tick", now, TICK_EVERY_SEC))) return EMPTY;
-  return runTick(db, now, ipSecret);
+  return runTick(db, now, ipSecret, opts);
 }
 
-export async function runTick(db: Db, now: Date, ipSecret: string): Promise<TickReport> {
+export async function runTick(db: Db, now: Date, ipSecret: string, opts: TickOptions = {}): Promise<TickReport> {
   const report: TickReport = { ...EMPTY, ran: true };
 
   // 1. Leases that ran out: back in the queue, or failed if out of attempts.
@@ -119,6 +131,12 @@ export async function runTick(db: Db, now: Date, ipSecret: string): Promise<Tick
   // 7. Time-Bank credits older than 6 months.
   report.creditsExpired = await expireCredits(db, now);
 
+  // 8. Checks that no independent PC can run: canary-only verification instead.
+  report.canaryOnly = await coverUncheckablePieces(db, now, opts.sybil ?? "enforce");
+
+  // 9. Security alerts (role changes, new admin authenticators).
+  report.alertsSent = (await sendSecurityAlerts(db, opts.alerts)).sent;
+
   return report;
 }
 
@@ -156,6 +174,7 @@ async function startBackups(db: Db, now: Date): Promise<number> {
       inputKey: f.inputKey,
       inputSha256: f.inputSha256,
       wrappedKey: f.wrappedKey,
+      deadlineAt: f.deadlineAt,
     });
     started += 1;
   }

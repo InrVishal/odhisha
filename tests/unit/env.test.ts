@@ -87,6 +87,21 @@ describe("parseEnv", () => {
     expect(env.AUTH_GOOGLE_ID).toBeUndefined();
   });
 
+  it("refuses SERVER_TIMING=1 in production; allows it on a preview (load test)", () => {
+    expect(issuesOf({ ...prodEnv, SERVER_TIMING: "1" }).join()).toMatch(/SERVER_TIMING/);
+    expect(parseEnv({ ...prodEnv, VERCEL_ENV: "preview", SERVER_TIMING: "1" }).SERVER_TIMING).toBe("1");
+  });
+
+  it("refuses AGENT_IP_LIMIT_PER_MIN in production; allows it on a preview (load test)", () => {
+    expect(issuesOf({ ...prodEnv, AGENT_IP_LIMIT_PER_MIN: "100000" }).join()).toMatch(/AGENT_IP_LIMIT_PER_MIN/);
+    expect(parseEnv({ ...prodEnv, VERCEL_ENV: "preview", AGENT_IP_LIMIT_PER_MIN: "100000" }).AGENT_IP_LIMIT_PER_MIN).toBe(100_000);
+  });
+
+  it.each(["preview", "production"])("refuses NODE_TLS_REJECT_UNAUTHORIZED=0 in %s (it would turn off certificate checks)", (vercelEnv) => {
+    expect(issuesOf({ ...prodEnv, VERCEL_ENV: vercelEnv, NODE_TLS_REJECT_UNAUTHORIZED: "0" }).join()).toMatch(/NODE_TLS_REJECT_UNAUTHORIZED/);
+    expect(issuesOf({ ...prodEnv, VERCEL_ENV: vercelEnv, NODE_TLS_REJECT_UNAUTHORIZED: "1" })).toEqual([]);
+  });
+
   it("requires both coordinator keys in preview and production, not in dev", () => {
     const noKeys: Record<string, string | undefined> = { ...prodEnv, COORDINATOR_SIGNING_KEY: undefined, DATA_ENCRYPTION_KEY: undefined };
     const issues = issuesOf(noKeys).join();
@@ -157,5 +172,29 @@ describe("deployed defaults and Vercel Marketplace names", () => {
   it("explicit UPSTASH_* values win over KV_*", () => {
     const env = parseEnv({ ...prodEnv, KV_REST_API_URL: "https://other.upstash.io" });
     expect(env.UPSTASH_REDIS_REST_URL).toBe("https://example.upstash.io");
+  });
+});
+
+describe("admin allowlist and database TLS (Phase 8)", () => {
+  it("ADMIN_EMAILS is a lower-cased list; empty means nobody is an admin", () => {
+    expect(parseEnv(devEnv).ADMIN_EMAILS).toEqual([]);
+    expect(parseEnv({ ...devEnv, ADMIN_EMAILS: " Me@Example.in , you@example.in " }).ADMIN_EMAILS).toEqual(["me@example.in", "you@example.in"]);
+    expect(issuesOf({ ...devEnv, ADMIN_EMAILS: "me@example.in, not-an-email" }).join()).toMatch(/ADMIN_EMAILS/);
+  });
+
+  it("an ADMIN_ variable can't be NEXT_PUBLIC_ (it would ship to the browser)", () => {
+    expect(issuesOf({ ...devEnv, NEXT_PUBLIC_ADMIN_EMAILS: "me@example.in" }).join()).toMatch(/NEXT_PUBLIC_ADMIN_EMAILS/);
+  });
+
+  it("deployed: the database connection must verify the server certificate", () => {
+    expect(issuesOf(prodEnv)).toEqual([]);
+    // Neon: wss://, verified by Node. Anything else needs sslmode=verify-full.
+    expect(issuesOf({ ...prodEnv, DATABASE_URL: "postgresql://u:p@db.example.com/db" }).join()).toMatch(/DATABASE_URL: must use TLS/);
+    expect(issuesOf({ ...prodEnv, DATABASE_URL: "postgresql://u:p@db.example.com/db?sslmode=require" }).join()).toMatch(/DATABASE_URL: must use TLS/);
+    expect(issuesOf({ ...prodEnv, DATABASE_URL: "postgresql://u:p@db.example.com/db?sslmode=verify-full" })).toEqual([]);
+    expect(issuesOf({ ...prodEnv, DATABASE_URL: "postgresql://u:p@ep-x.neon.tech/db?sslmode=disable" }).join()).toMatch(/DATABASE_URL: must use TLS/);
+    expect(issuesOf({ ...prodEnv, DATABASE_URL_READONLY: "postgresql://r:p@db.example.com/db" }).join()).toMatch(/DATABASE_URL_READONLY: must use TLS/);
+    // Local dev is unaffected.
+    expect(issuesOf({ ...devEnv, DATABASE_URL: "postgres://postgres:postgres@localhost:5432/x" })).toEqual([]);
   });
 });

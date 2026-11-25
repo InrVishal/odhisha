@@ -1,10 +1,51 @@
-# ZAP baseline rule overrides: <rule id>	<IGNORE|WARN|FAIL>	<reason>
-# High-risk passive rules fail the build.
+# ZAP rule levels for the full scan (passive + active): <rule id>	<IGNORE|WARN|FAIL>	<reason>
+# The scan runs with -I: a FAIL breaks the build, a WARN is printed for review.
+# Anything not listed is WARN. Every WARN below was looked at; the reason says why it isn't a FAIL.
+#
+# Passive: headers and disclosure.
 10020	FAIL	Anti-clickjacking header
 10021	FAIL	X-Content-Type-Options header missing
 10035	FAIL	Strict-Transport-Security header
 10038	FAIL	Content Security Policy header not set
 10055	WARN	CSP: reported for review
-10098	FAIL	Cross-domain misconfiguration
 10202	WARN	Forms are Server Actions (Origin-header CSRF check) or Auth.js (double-submit token)
+20012	WARN	Same as 10202: Server Actions check the Origin header instead of a form token
 90022	FAIL	Application error disclosure
+10044	WARN	The anonymous /dashboard 307 carries the public page shell only (no user data)
+10098	WARN	Vercel's CDN adds ACAO * to public static files only; scripts/smoke.mjs fails if any page or API sends CORS allow headers
+40040	WARN	Same as 10098 (static files only); smoke.mjs enforces no CORS on pages and APIs
+40025	WARN	Proxy disclosure: says the site is behind Vercel's edge, which is public
+90004	WARN	COEP not set: no cross-origin isolation needed; COOP and CORP are set
+30003	WARN	Next.js answers a 500 with an opaque digest when a Server Action's argument list itself is malformed (before app code runs); app code answers 200/400
+40033	WARN	No MongoDB; strict input schemas answer differently to [$ne] keys
+#
+# Active: any of these firing is a real hole, so they fail the build.
+0	FAIL	Directory browsing
+6	FAIL	Path traversal
+7	FAIL	Remote file inclusion
+40003	FAIL	CRLF injection
+40009	FAIL	Server side include
+40012	FAIL	Cross site scripting (reflected)
+40014	FAIL	Cross site scripting (persistent)
+40016	FAIL	Cross site scripting (persistent, prime)
+40017	FAIL	Cross site scripting (persistent, spider)
+40018	FAIL	SQL injection
+40019	FAIL	SQL injection (MySQL)
+40020	FAIL	SQL injection (Hypersonic)
+40021	FAIL	SQL injection (Oracle)
+40022	FAIL	SQL injection (PostgreSQL)
+40024	FAIL	SQL injection (SQLite)
+40026	FAIL	Cross site scripting (DOM based)
+40027	FAIL	SQL injection (MsSQL)
+40034	FAIL	.env information leak
+40035	FAIL	Hidden file found
+40046	FAIL	Server side request forgery
+90017	FAIL	XSLT injection
+90019	FAIL	Server side code injection
+90020	FAIL	Remote OS command injection
+90021	FAIL	XPath injection
+90023	FAIL	XML external entity attack
+90025	FAIL	Expression language injection
+90035	FAIL	Server side template injection
+90036	FAIL	Server side template injection (blind)
+20019	FAIL	External redirect

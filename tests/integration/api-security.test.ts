@@ -116,6 +116,32 @@ describe("IDOR: user B can't read or change user A's things", () => {
     expect((await complete(h, bobNode.token, l)).status).toBe(200);
   });
 
+  it("invoices: only for your own job", async () => {
+    await notFound(H.invoiceHandler(jsonReq("GET", `/api/jobs/${aliceDoneJobId}/invoice`), h.as(bob), aliceDoneJobId));
+    const own = await H.invoiceHandler(jsonReq("GET", `/api/jobs/${aliceDoneJobId}/invoice`), h.as(alice), aliceDoneJobId);
+    expect(own.status).toBe(200);
+    await own.arrayBuffer();
+  });
+
+  it("Time-Bank wallet, account export and payout UPI: always your own, whatever you send", async () => {
+    // No endpoint takes an account id: each reads the session's.
+    const credits = await body<{ history: Array<{ jobId: string | null }> }>(await H.creditsHandler(jsonReq("GET", `/api/credits?userId=${alice.id}`), h.as(bob)));
+    expect(credits.history.every((r) => r.jobId === null || r.jobId !== aliceDoneJobId)).toBe(true);
+    const exported = await body<{ account: { id: string; email: string } }>(await H.exportAccountHandler(jsonReq("GET", `/api/account/export?id=${alice.id}`), h.as(bob)));
+    expect(exported.account).toMatchObject({ id: bob.id, email: "bob@example.in" });
+    expect(JSON.stringify(exported)).not.toContain("alice@example.in");
+    await H.linkUpiHandler(jsonReq("POST", "/api/account/upi", { upiId: "alice@okaxis" }), h.as(alice));
+    const taken = await H.linkUpiHandler(jsonReq("POST", "/api/account/upi", { upiId: "alice@okaxis" }), h.as(bob));
+    expect(taken.status).toBe(409);
+  });
+
+  it("paying with credits only ever spends your own", async () => {
+    const q = await body<{ job: { id: string } }>(await quoteTexts(h, bob, 5));
+    const r = await H.confirmJobHandler(jsonReq("POST", `/api/jobs/${q.job.id}/confirm`, { payWith: "credits" }), h.as(bob), q.job.id);
+    expect(r.status).toBe(409);
+    expect((await r.json()).error).toBe("not_enough_credits");
+  });
+
   it("ids that aren't UUIDs are just 'not found'", async () => {
     await notFound(H.getJobHandler(jsonReq("GET", "/api/jobs/1 or 1=1"), h.as(alice), "1 or 1=1"));
     await notFound(H.getNodeHandler(jsonReq("GET", "/api/nodes/../x"), h.as(alice), "../x"));
@@ -287,12 +313,16 @@ describe("rate limits", () => {
     }
   });
 
-  it("limits agents per IP before looking up the token", async () => {
+  it("limits agents per IP and per token before looking up the token", async () => {
     h.limiter.calls = [];
     h.limiter.deny.add("agentIp");
-    await beat(h, "nsn_" + "A".repeat(43));
+    // An unknown token: if the lookup ran first, this would be a 401, not a 429.
+    const r = await beat(h, "nsn_" + "A".repeat(43));
     h.limiter.deny.delete("agentIp");
-    expect(h.limiter.calls.map((c) => c[0])).toEqual(["agentIp"]);
+    expect(r.status).toBe(429);
+    expect(h.limiter.calls.map((c) => c[0]).sort()).toEqual(["agentIp", "agentNode"]);
+    // The per-token key is the token's hash, never the token itself.
+    expect(h.limiter.calls.find((c) => c[0] === "agentNode")?.[1]).toMatch(/^token:[0-9a-f]{64}$/);
   });
 });
 

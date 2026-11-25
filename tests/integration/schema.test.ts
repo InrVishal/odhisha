@@ -16,9 +16,10 @@ import {
 } from "@/lib/db/schema";
 import { DEFAULT_OWNER_RATE_PAISE_PER_HR } from "@/lib/pricing";
 import { generateNodeToken, hashToken } from "@/lib/security/tokens";
-import { freshDb } from "../helpers/db";
+import { freshDb, type TestDb } from "../helpers/db";
 
 let db: Db;
+let t: TestDb;
 let cleanup: () => Promise<void>;
 let ownerId: string;
 let nodeId: string;
@@ -35,9 +36,9 @@ async function pgError(p: Promise<unknown>): Promise<string> {
 }
 
 beforeAll(async () => {
-  const h = await freshDb();
-  db = h.db;
-  cleanup = h.cleanup;
+  t = await freshDb();
+  db = t.db;
+  cleanup = t.cleanup;
   const [u] = await db.insert(users).values({ email: "owner@example.in" }).returning();
   ownerId = u!.id;
   const [n] = await db
@@ -82,18 +83,25 @@ describe("append-only ledgers and audit log", () => {
     await audit(db, { actorId: ownerId, actorType: "user", action: "auth.login" }, "k");
   });
 
-  it.each(APPEND_ONLY_TABLES)("%s rejects UPDATE", async (table) => {
+  // The app's role can't even try (no privilege); the trigger stops everyone
+  // else, including the owner role that runs migrations.
+  it.each(APPEND_ONLY_TABLES)("%s rejects UPDATE (app role: no privilege; owner role: trigger)", async (table) => {
     const column = table === "audit_log" ? "at" : "created_at";
-    const msg = await pgError(db.execute(sql`update ${sql.identifier(table)} set ${sql.identifier(column)} = now()`));
-    expect(msg).toMatch(/append-only/);
+    const q = sql`update ${sql.identifier(table)} set ${sql.identifier(column)} = now()`;
+    expect(await pgError(db.execute(q))).toMatch(/permission denied/);
+    expect(await t.asOwner((o) => pgError(o.execute(q)))).toMatch(/append-only/);
   });
 
-  it.each(APPEND_ONLY_TABLES)("%s rejects DELETE", async (table) => {
-    expect(await pgError(db.execute(sql`delete from ${sql.identifier(table)}`))).toMatch(/append-only/);
+  it.each(APPEND_ONLY_TABLES)("%s rejects DELETE (app role: no privilege; owner role: trigger)", async (table) => {
+    const q = sql`delete from ${sql.identifier(table)}`;
+    expect(await pgError(db.execute(q))).toMatch(/permission denied/);
+    expect(await t.asOwner((o) => pgError(o.execute(q)))).toMatch(/append-only/);
   });
 
-  it.each(APPEND_ONLY_TABLES)("%s rejects TRUNCATE", async (table) => {
-    expect(await pgError(db.execute(sql`truncate ${sql.identifier(table)}`))).toMatch(/append-only/);
+  it.each(APPEND_ONLY_TABLES)("%s rejects TRUNCATE (app role: no privilege; owner role: trigger)", async (table) => {
+    const q = sql`truncate ${sql.identifier(table)}`;
+    expect(await pgError(db.execute(q))).toMatch(/permission denied/);
+    expect(await t.asOwner((o) => pgError(o.execute(q)))).toMatch(/append-only/);
   });
 
   it("rows are still there after the rejected writes", async () => {
@@ -117,8 +125,9 @@ describe("append-only ledgers and audit log", () => {
     expect(Number(res[0]!.total)).toBe(1000);
   });
 
-  it("users referenced by the ledger cannot be hard-deleted", async () => {
-    expect(await pgError(db.delete(users).where(eq(users.id, ownerId)))).toMatch(/foreign key|violates/i);
+  it("users can't be hard-deleted: the app's role has no DELETE, and the ledger's foreign key stops the owner role", async () => {
+    expect(await pgError(db.delete(users).where(eq(users.id, ownerId)))).toMatch(/permission denied/);
+    expect(await t.asOwner((o) => pgError(o.delete(users).where(eq(users.id, ownerId))))).toMatch(/foreign key|violates/i);
   });
 });
 
@@ -175,7 +184,6 @@ describe("auth adapter data minimisation", () => {
       emailVerified: new Date(),
       name: "Real Name",
       image: "https://example.com/me.jpg",
-      role: "user",
     });
     await adapter.linkAccount!({
       userId: user.id,

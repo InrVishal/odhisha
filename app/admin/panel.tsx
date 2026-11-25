@@ -1,30 +1,18 @@
-import type { Metadata } from "next";
-import { notFound } from "next/navigation";
 import { JOB_STATUS, NODE_STATUS, rupees, shortId, when } from "@/components/dashboard/format";
 import { Badge, Card, Empty, PageTitle, Stat, TableWrap, Td, Th } from "@/components/dashboard/ui";
 import { adminAudit, adminJobs, adminLedger, adminNodes, adminTotals } from "@/lib/admin";
-import { AuthzError, requireAdmin } from "@/lib/auth/guards";
 import { CLASS_SPECS } from "@/lib/coordinator/classes";
 import { recentFlags } from "@/lib/coordinator/sybil";
 import { WORKLOADS } from "@/lib/coordinator/workloads";
-import { pageContext } from "../data";
+import type { Db } from "@/lib/db/client";
 import { ReleaseButton } from "./release-button";
 
-export const metadata: Metadata = { title: "Admin" };
-
 /**
- * Read-only admin panel. The role is re-read from the database on every
- * request (requireAdmin) and is only ever set in the database. Anyone else
- * gets a plain 404, so the page doesn't even confirm it exists.
+ * The admin panel. Only rendered by page.tsx after the full admin check
+ * (two keys, a login from the last 15 minutes and a second factor). Reads
+ * through the "readonly" database role when it's configured.
  */
-export default async function AdminPage() {
-  const { db } = await pageContext();
-  try {
-    await requireAdmin();
-  } catch (err) {
-    if (err instanceof AuthzError) notFound();
-    throw err;
-  }
+export async function AdminPanel({ db }: { db: Db }) {
   const [totals, nodeRows, quarantined, jobRows, ledger, auditRows, flags] = await Promise.all([
     adminTotals(db),
     adminNodes(db),

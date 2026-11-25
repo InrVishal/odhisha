@@ -1,15 +1,22 @@
 # NightShift CI/CD. Stages run in the order the spec requires:
-#   1 lint+typecheck → 2 unit → 3 integration → 4 security → 5 build
-#   → preview deploy (own Neon branch) → 6 E2E → 7 ZAP → 8 Lighthouse
-#   → production deploy (main only, and only if everything above is green)
+#   1 lint+typecheck → 2 unit → 3 integration (+3b canary classifier) → 4 security
+#   → 5 build → preview deploy (own Neon branch) → 6 E2E → 7 ZAP full scan
+#   → 8 Lighthouse; 9 load test runs alongside the preview
+#   → production deploy + smoke test (main only, and only if everything above is green)
 #
 # Vercel's own Git auto-deploy is turned off in vercel.json, so this pipeline
 # is the only way code reaches Vercel.
 #
-# Required secrets (see DEPLOY.md): VERCEL_TOKEN, VERCEL_ORG_ID,
+# Secrets (see SECURITY.md, "Secrets in CI"): VERCEL_TOKEN, VERCEL_ORG_ID,
 # VERCEL_PROJECT_ID, NEON_API_KEY, NEON_PROJECT_ID,
 # VERCEL_AUTOMATION_BYPASS_SECRET, and in the "production" environment:
-# PROD_DATABASE_URL_UNPOOLED, PROD_BASE_URL.
+# PROD_DATABASE_URL_UNPOOLED, PROD_BASE_URL. Optional: UPSTASH_EMAIL and
+# UPSTASH_API_KEY (Upstash Developer API, read-only) for the quota checks.
+#
+# Hardening: every job states its own permissions (the default is none);
+# no pull_request_target, so a fork's code never runs with secrets; jobs that
+# need secrets don't run for fork PRs at all; checkouts don't keep the token;
+# workflow expressions never go straight into shell scripts (zizmor checks).
 name: CI
 
 on:
@@ -21,8 +28,7 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-permissions:
-  contents: read
+permissions: {}
 
 env:
   NODE_VERSION: "22"
@@ -36,8 +42,11 @@ jobs:
   lint-typecheck:
     name: 1 · Lint and typecheck
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
       - run: npm ci
@@ -48,12 +57,15 @@ jobs:
     name: 2 · Unit tests
     needs: lint-typecheck
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
       - run: npm ci
-      # Runs unit + integration (PGlite) together so coverage on lib/ is complete.
+      # Runs unit + integration (PGlite, as the app_runtime role) together so coverage on lib/ is complete.
       - run: npm run test:coverage
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -63,11 +75,14 @@ jobs:
     name: 2b · Agent (ruff, mypy --strict, bandit, pytest + real-container sandbox tests)
     needs: lint-typecheck
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: agent
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with: { python-version: "3.11" }
       - name: Install (hash-pinned)
@@ -84,9 +99,11 @@ jobs:
         run: pytest --cov --cov-report=term-missing
 
   integration:
-    name: 3 · Integration tests (Postgres 18)
+    name: 3 · Integration tests (Postgres 18, as app_runtime)
     needs: unit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     services:
       postgres:
         image: postgres:18
@@ -100,18 +117,51 @@ jobs:
       TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
       - run: npm ci
       - run: npm run test:integration
 
+  canary-classifier:
+    name: 3b · Canary classifier (n = 1000 per class)
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      CANARY_CLASSIFIER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
+      - run: npm ci
+      - name: Can a cheater tell known-answer canaries from real work? (fails if the 95% upper bound is above 0.55)
+        run: npx vitest run tests/integration/canary.test.ts -t "n = 1000"
+
   security:
     name: 4 · Security scans
     needs: [integration, agent]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Pull the digest-pinned workload images for the container scan.
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { fetch-depth: 0 }
+        with: { fetch-depth: 0, persist-credentials: false }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
       - run: npm ci
@@ -140,13 +190,19 @@ jobs:
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with: { python-version: "3.11" }
-      - name: Semgrep (fail on ERROR)
+      - name: Semgrep (project rules tested first, then the scan; fail on ERROR)
         run: |
           python -m pip install --quiet "semgrep==1.186.0"
+          semgrep --test --metrics off tools/semgrep
           semgrep scan --error --severity ERROR --metrics off \
             --config p/default --config p/owasp-top-ten --config p/typescript --config p/python \
-            --config .semgrep.yml \
-            --exclude node_modules --exclude coverage --exclude .next
+            --config tools/semgrep/nightshift.yaml \
+            --exclude node_modules --exclude coverage --exclude .next --exclude tools/semgrep
+
+      - name: GitHub Actions workflows (zizmor)
+        run: |
+          python -m pip install --quiet "zizmor==1.33.1"
+          zizmor --offline .github/workflows
 
       - name: pip-audit (agent)
         if: hashFiles('agent/requirements.lock') != ''
@@ -155,6 +211,26 @@ jobs:
           pip-audit --strict -r agent/requirements.lock
           pip-audit --strict -r agent/requirements-dev.lock
 
+      - name: Container images (Trivy, every digest-pinned workload image; fail on fixable high/critical)
+        env:
+          TRIVY_VERSION: "0.76.1"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          F="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          BASE="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          curl -sSfL -o "$F" "$BASE/$F"
+          curl -sSfL -o trivy-checksums.txt "$BASE/trivy_${TRIVY_VERSION}_checksums.txt"
+          grep " $F\$" trivy-checksums.txt | sha256sum -c -
+          tar -xzf "$F" trivy
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          images=$(grep -oE 'ghcr\.io/[a-z0-9./-]+@sha256:[0-9a-f]{64}' lib/coordinator/workloads.ts | sort -u)
+          test -n "$images"
+          for img in $images; do
+            echo "::group::$img"
+            ./trivy image --quiet --no-progress --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln "$img"
+            echo "::endgroup::"
+          done
+
       - name: Banned words in site copy (source) and COPY.md in sync
         run: npm run copy:check -- --source-only
 
@@ -162,36 +238,108 @@ jobs:
     name: 5 · Build
     needs: security
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
       - run: npm ci
       - run: npm run build
+      - name: No secrets or source maps in anything a browser can download
+        run: node scripts/scan-bundle.mjs
       - name: Banned words on the built site (crawls every page)
         run: npm run copy:check
       - name: Accessibility, keyboard and site checks on the build (Chromium)
         run: |
           npx playwright install --with-deps chromium
           npx playwright test --project=chromium
+      - name: Smoke test on the build (exposed files, source maps, admin 404s, error pages)
+        run: |
+          NODE_ENV=production EMAIL_TRANSPORT=console RATE_LIMIT_BACKEND=memory nohup node node_modules/next/dist/bin/next start -p 3500 > smoke-server.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:3500/api/health >/dev/null && break; sleep 1; done
+          node scripts/smoke.mjs http://127.0.0.1:3500
+      # No Playwright report/trace/screenshot upload anywhere: this repo is public,
+      # and traces hold page contents and cookies. Failures are read from the log.
+
+  load:
+    name: 9 · Load correctness (k6, 200 virtual users, local; latency is judged on the preview)
+    needs: security
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
+      - run: npm ci
+      - run: npm run build
+      - name: k6
+        env: { K6_VERSION: "2.3.0" }
+        run: |
+          F="k6-v${K6_VERSION}-linux-amd64.tar.gz"
+          BASE="https://github.com/grafana/k6/releases/download/v${K6_VERSION}"
+          curl -sSfL -o "$F" "$BASE/$F"
+          curl -sSfL -o k6-checksums.txt "$BASE/k6-v${K6_VERSION}-checksums.txt"
+          grep " $F\$" k6-checksums.txt | sha256sum -c -
+          tar -xzf "$F" --strip-components=1 "k6-v${K6_VERSION}-linux-amd64/k6"
+      # Correctness under concurrency on every push: 200 virtual users against 3
+      # local app processes and a local Postgres, judged on failures, 429s and
+      # 5xx only. App, Postgres and k6 share this runner, so its timings describe
+      # the runner, not the app: they're printed, not judged. Latency is judged
+      # on the real setup by .github/workflows/load-preview.yml (label "load-test").
+      - name: "200 virtual users, 3 local app processes: no failures, no 429s, no 5xx (timings: this runner only)"
+        env:
+          ADMIN_URL: postgres://postgres:postgres@localhost:5432/postgres
+          JUDGE_LATENCY: "0"
+        run: |
+          echo "runner: $(nproc) vCPUs"
+          bash tools/load/prepare-db.sh 200 load-seed.json
+          # Where the time goes (CPU per process, what Postgres waits on), printed after k6.
+          node tools/load/sample.mjs 150 40 > load-sample.txt 2>&1 &
+          SAMPLER=$!
+          status=0
+          bash tools/load/run.sh 3 k6-summary.json -e JUDGE_LATENCY="$JUDGE_LATENCY" || status=$?
+          wait "$SAMPLER" || true
+          cat load-sample.txt
+          echo "server errors (any process):"
+          grep -h -i -E "error|⨯" load-server-*.log | sed -E 's/[0-9a-f]{8}-[0-9a-f-]{27}/<id>/g' | sort | uniq -c | sort -rn | head -20 || true
+          exit "$status"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: failure()
-        with: { name: playwright-build, path: "playwright-report/\ntest-results/", retention-days: 7 }
+        if: always()
+        with: { name: k6-summary, path: "k6-summary*.json", retention-days: 14 }
 
   preview:
-    name: Preview deploy (own Neon branch) + live agent test + signed-in dashboards
+    name: Preview deploy (own Neon branch, as app_runtime) + live agent test + signed-in dashboards
     needs: build
+    # Secrets never reach a fork's code: fork PRs stop before this job.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: read
     outputs:
       url: ${{ steps.deploy.outputs.url }}
+      neon_branch: ${{ github.event_name == 'pull_request' && format('preview/pr-{0}', github.event.number) || format('ci/main-{0}', github.run_id) }}
+      neon_branch_id: ${{ steps.neon.outputs.branch_id }}
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
       - run: npm ci
@@ -204,27 +352,57 @@ jobs:
           api_key: ${{ secrets.NEON_API_KEY }}
           branch_name: ${{ github.event_name == 'pull_request' && format('preview/pr-{0}', github.event.number) || format('ci/main-{0}', github.run_id) }}
 
-      - name: Migrate the preview database
+      - name: Migrate the preview database (owner role, as the production deploy does)
         run: npm run db:migrate
         env:
           DATABASE_URL: ${{ steps.neon.outputs.db_url }}
 
-      - name: Deploy preview
+      - name: Logins for app_runtime and readonly on this branch (random, masked)
+        env:
+          OWNER_URL: ${{ steps.neon.outputs.db_url }}
+          POOLED_URL: ${{ steps.neon.outputs.db_url_pooled }}
+        run: node scripts/preview-db-roles.mjs
+
+      - name: Nobody can query the database but the app (no Data API/GraphQL, TLS only, roles without powers)
+        env:
+          PREVIEW_DATABASE_URL: ${{ steps.neon.outputs.db_url }}
+        run: npx tsx tests/live/db-exposure.ts
+
+      - name: Preview and Production share no Redis or database (Vercel variables, names and targets only)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: node scripts/check-env-isolation.mjs
+
+      - name: Deploy preview (connects as app_runtime; admin reports as readonly)
         id: deploy
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          PREVIEW_DATABASE_URL: ${{ steps.neon.outputs.db_url_pooled }}
         run: |
           npx --yes vercel@66.5.0 pull --yes --environment=preview --token="$VERCEL_TOKEN"
           npx --yes vercel@66.5.0 build --token="$VERCEL_TOKEN"
-          url=$(npx --yes vercel@66.5.0 deploy --prebuilt --token="$VERCEL_TOKEN" --env DATABASE_URL="$PREVIEW_DATABASE_URL" --env SYBIL_CHECKER_RULES=report)
+          url=$(npx --yes vercel@66.5.0 deploy --prebuilt --token="$VERCEL_TOKEN" \
+            --env DATABASE_URL="$RUNTIME_DATABASE_URL_POOLED" \
+            --env DATABASE_URL_READONLY="$READONLY_DATABASE_URL_POOLED" \
+            --env ADMIN_EMAILS=admin@ci.nightshift.test \
+            --env SYBIL_CHECKER_RULES=report)
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "Preview: $url" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Security headers on the preview
+      - name: No secrets or source maps in the deployed build (values from vercel pull and this job)
+        run: node scripts/scan-bundle.mjs --env-file .vercel/.env.preview.local .vercel/output/static .next/static .next/server/app
+
+      - name: Security headers and smoke test on the preview
         env:
+          PREVIEW_URL: ${{ steps.deploy.outputs.url }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-        run: node scripts/check-headers.mjs "${{ steps.deploy.outputs.url }}"
+        run: |
+          node scripts/check-headers.mjs "$PREVIEW_URL"
+          node scripts/smoke.mjs "$PREVIEW_URL"
+      - name: Upstash use this month (fails at 70% of any database's allowance)
+        env:
+          UPSTASH_EMAIL: ${{ secrets.UPSTASH_EMAIL }}
+          UPSTASH_API_KEY: ${{ secrets.UPSTASH_API_KEY }}
+        run: node scripts/upstash-usage.mjs --fail-at 0.7
 
       # Runs here because it needs this run's preview database (to create
       # the test owner and buyer sessions), which can't be passed to another job.
@@ -245,7 +423,7 @@ jobs:
 
       # Signed in as the owner, buyer and admin from the step above, whose job
       # really ran. No report upload: traces would hold the (1-hour) sessions.
-      - name: Signed-in dashboards in a real browser (buyer, owner, admin)
+      - name: Signed-in dashboards in a real browser (buyer, owner, admin with an authenticator)
         env:
           E2E_BASE_URL: ${{ steps.deploy.outputs.url }}
           E2E_AUTH_FILE: ${{ runner.temp }}/e2e-auth.json
@@ -259,8 +437,11 @@ jobs:
     name: 6 · E2E against preview
     needs: preview
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
       - run: npm ci
@@ -274,32 +455,66 @@ jobs:
           npm run test:e2e
 
   zap:
-    name: 7 · OWASP ZAP baseline
+    name: 7 · OWASP ZAP full scan (active)
     needs: [preview, e2e]
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25 # v0.15.0
-        with:
-          target: ${{ needs.preview.outputs.url }}
-          rules_file_name: .zap/rules.tsv
-          # -I: only FAIL rules (high) break the build; WARNs are reported.
-          cmd_options: >-
-            -a -j -I
-            -z "-config replacer.full_list(0).description=bypass
-            -config replacer.full_list(0).enabled=true
-            -config replacer.full_list(0).matchtype=REQ_HEADER
-            -config replacer.full_list(0).matchstr=x-vercel-protection-bypass
-            -config replacer.full_list(0).replacement=${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}"
-          allow_issue_writing: false
-          fail_action: true
+        with: { persist-credentials: false }
+      # Active attacks go to this run's preview and its own Neon branch only.
+      - name: Target is this run's preview deployment and its own Neon branch (never production)
+        env:
+          TARGET: ${{ needs.preview.outputs.url }}
+          BRANCH: ${{ needs.preview.outputs.neon_branch }}
+          BRANCH_ID: ${{ needs.preview.outputs.neon_branch_id }}
+        run: |
+          host=$(node -e 'process.stdout.write(new URL(process.env.TARGET).hostname)')
+          echo "ZAP target: https://$host (a per-deployment preview URL from vercel deploy without --prod)"
+          echo "Its database: Neon branch '$BRANCH' ($BRANCH_ID), created for this run from production's schema; production uses the main branch"
+          case "$host" in
+            nightshift-ten-iota.vercel.app|*nightshift.in) echo "refusing: that is production"; exit 1 ;;
+            nightshift-*-inrvishals-projects.vercel.app) ;;
+            *) echo "refusing: not a preview deployment URL"; exit 1 ;;
+          esac
+          case "$BRANCH" in
+            preview/pr-*|ci/main-*) ;;
+            *) echo "refusing: not a per-PR or per-run Neon branch"; exit 1 ;;
+          esac
+      # Run directly (digest-pinned image) rather than through the action, so
+      # .zap/rules.tsv is really applied (-c; the action dropped it) and no
+      # report is uploaded (the repo is public); a summary goes to the log.
+      - name: ZAP full scan (spider + AJAX spider + active attacks), rules from .zap/rules.tsv
+        env:
+          TARGET: ${{ needs.preview.outputs.url }}
+          BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          ZAP_IMAGE: ghcr.io/zaproxy/zaproxy:2.17.0@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af
+        run: |
+          mkdir -p zap && cp .zap/rules.tsv zap/rules.tsv && chmod -R a+rwX zap
+          # -c: rule levels; -I: WARNs don't fail, FAILs do; -a: alpha rules too;
+          # -j: AJAX spider; -m 5: spider for up to 5 minutes.
+          set +e
+          docker run --rm --network=host -v "$PWD/zap:/zap/wrk:rw" "$ZAP_IMAGE" zap-full-scan.py \
+            -t "$TARGET" -c rules.tsv -J report.json -a -j -I -m 5 \
+            -z "-config replacer.full_list(0).description=bypass -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=x-vercel-protection-bypass -config replacer.full_list(0).replacement=$BYPASS"
+          code=$?
+          set -e
+          node scripts/zap-summary.mjs zap/report.json
+          rm -rf zap
+          echo "zap-full-scan exit code: $code (0 = no FAIL rule fired)"
+          exit "$code"
 
   lighthouse:
     name: 8 · Lighthouse (90+ on every category)
     needs: [preview, zap]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "${{ env.NODE_VERSION }}" }
       - name: Lighthouse CI
@@ -312,10 +527,12 @@ jobs:
         with: { name: lighthouse, path: lhci_reports/, retention-days: 14 }
 
   production:
-    name: Production deploy
+    name: Production deploy + smoke test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [lighthouse]
+    needs: [lighthouse, load, canary-classifier]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # GitHub environment holding production-only secrets. Add required
     # reviewers to it in repo settings if you want a manual approval gate.
     environment: production
@@ -324,28 +541,61 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
       - run: npm ci
 
+      - name: Preview and Production share no Redis or database (Vercel variables, names and targets only)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: node scripts/check-env-isolation.mjs
+
+      # The only place the owner (migrator) role's password is used.
       - name: Migrate production (see DEPLOY.md for rollback)
         run: npm run db:migrate
         env:
           DATABASE_URL: ${{ secrets.PROD_DATABASE_URL_UNPOOLED }}
+      - name: Mark the production database as production's (its Neon endpoint id; previews compare against it)
+        run: npx tsx scripts/mark-production-db.ts
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL_UNPOOLED }}
 
-      - name: Build and deploy to production
+      # Deployed without the production domain first, checked, then promoted:
+      # a build whose database or Redis is wrong (or shared with Preview)
+      # never takes traffic.
+      - name: Build and deploy to production (not live yet)
+        id: deploy
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           npx --yes vercel@66.5.0 pull --yes --environment=production --token="$VERCEL_TOKEN"
           npx --yes vercel@66.5.0 build --prod --token="$VERCEL_TOKEN"
-          npx --yes vercel@66.5.0 deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+          node scripts/scan-bundle.mjs --env-file .vercel/.env.production.local .vercel/output/static .next/static .next/server/app
+          url=$(npx --yes vercel@66.5.0 deploy --prebuilt --prod --skip-domain --token="$VERCEL_TOKEN")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+      - name: The new production deployment is healthy (database and Redis reachable and its own)
+        env:
+          DEPLOY_URL: ${{ steps.deploy.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: node scripts/check-deployment.mjs "$DEPLOY_URL"
+      - name: Promote it (now it serves the production domain)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          DEPLOY_URL: ${{ steps.deploy.outputs.url }}
+        run: npx --yes vercel@66.5.0 promote "$DEPLOY_URL" --yes --token="$VERCEL_TOKEN"
 
-      - name: Security headers on production
-        run: node scripts/check-headers.mjs "${{ secrets.PROD_BASE_URL }}"
-
-      - name: Health check
-        run: curl -sSf "${{ secrets.PROD_BASE_URL }}/api/health"
+      - name: Security headers and smoke test on production (read-only)
+        env:
+          PROD_BASE_URL: ${{ secrets.PROD_BASE_URL }}
+        run: |
+          node scripts/check-headers.mjs "$PROD_BASE_URL"
+          node scripts/smoke.mjs "$PROD_BASE_URL"
+      - name: Upstash use this month (fails at 70% of any database's allowance)
+        env:
+          UPSTASH_EMAIL: ${{ secrets.UPSTASH_EMAIL }}
+          UPSTASH_API_KEY: ${{ secrets.UPSTASH_API_KEY }}
+        run: node scripts/upstash-usage.mjs --fail-at 0.7
 
       - name: Lighthouse on production (includes the SEO crawlability audit)
         env:
@@ -358,6 +608,7 @@ jobs:
     if: always() && github.event_name == 'push'
     needs: [preview, e2e, zap, lighthouse, production]
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - uses: neondatabase/delete-branch-action@4468d825d5a88ef4012f1705a82f02ec3072f776 # v3.2.1
         with:

@@ -1,5 +1,6 @@
 "use server";
 
+import { formField } from "@/lib/form";
 import { headers } from "next/headers";
 import { waitlist as copy } from "@/content/site";
 import { getDb } from "@/lib/db";
@@ -14,9 +15,9 @@ export interface WaitlistState {
 
 export async function joinWaitlistAction(_prev: WaitlistState, formData: FormData): Promise<WaitlistState> {
   const parsed = waitlistInput.safeParse({
-    email: formData.get("email"),
-    interest: formData.get("interest"),
-    consent: formData.get("consent"),
+    email: formField(formData, "email"),
+    interest: formField(formData, "interest"),
+    consent: formField(formData, "consent"),
   });
   if (!parsed.success) {
     const fields = new Set(parsed.error.issues.map((i) => String(i.path[0])));
@@ -31,7 +32,7 @@ export async function joinWaitlistAction(_prev: WaitlistState, formData: FormDat
   }
 
   const r = await checkLimit("waitlistIp", clientIp(await headers()));
-  if (!r.success) return { status: "error", errors: { form: copy.errors.rateLimited } };
+  if (!r.success) return { status: "error", errors: { form: r.unavailable ? copy.errors.unavailable : copy.errors.rateLimited } };
 
   try {
     await joinWaitlist(await getDb(), parsed.data);

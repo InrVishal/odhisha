@@ -1,0 +1,217 @@
+# On-demand load test of a PR's preview on Vercel with Neon: the setup that
+# serves users. Only people with write or triage access can label a PR:
+# - "load-test": k6 runs here, on a GitHub runner (US);
+# - "load-test-hold": no k6 here. The deployment and its 200 seeded accounts
+#   are held for 20 minutes, and the URL and seed are published as an
+#   artifact encrypted to tools/load/hold.crt (the repo is public; only the
+#   machine with the matching private key can read it). Then k6 runs from a
+#   machine in India: bash tools/load/run-remote.sh (see that file).
+# Not on every push: one run uses ~24k Vercel function calls and ~100k
+# Upstash commands (tools/load/upstash-budget.mjs). Previews have their own
+# Upstash database; on 2026-11-24, when they shared production's, four runs
+# used up its free monthly quota and took production's rate limits down
+# (docs/INCIDENTS.md). So before anything is created, this refuses unless no
+# Redis or database variable is shared with Production, the Preview Redis is
+# marked preview-only, and the run fits in 25% of its remaining month.
+#
+# What runs:
+# - a Neon branch load/pr-<n>-<run>, copied from the PR's preview branch
+#   (same schema, roles and settings), deleted at the end (and set to expire
+#   after 3 h in case cleanup fails), so the load test's jobs never land in
+#   the PR's own preview queue;
+# - a preview deployment of the PR's commit on that branch, as app_runtime.
+#   The only setting that differs from the PR preview: AGENT_IP_LIMIT_PER_MIN,
+#   because all 200 virtual PCs come from this one runner IP (the per-IP
+#   limit is for token guessing; production refuses the setting). Every other
+#   limit is on, and 429s are counted per endpoint;
+# - k6 from this runner: 200 virtual users for 3 minutes, judged on p95 of
+#   successful responses (< 300 ms), < 1% failures, no 429s, no 5xx;
+# - cleanup: the deployment is removed and the branch deleted.
+name: Load test (preview)
+on:
+  pull_request:
+    types: [labeled]
+permissions:
+  contents: read
+concurrency:
+  group: load-preview-${{ github.event.number }}
+  cancel-in-progress: false
+env:
+  NODE_VERSION: 22
+jobs:
+  load:
+    name: k6 on the preview (Vercel + Neon), 200 virtual users
+    # Only the label, only this repo's PRs (forks get no secrets).
+    if: (github.event.label.name == 'load-test' || github.event.label.name == 'load-test-hold') && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      LOAD_BRANCH: load/pr-${{ github.event.number }}-${{ github.run_id }}
+      MODE: ${{ github.event.label.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
+      - run: npm ci
+
+      - name: Preview and Production share no Redis or database (Vercel variables, names and targets only)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: node scripts/check-env-isolation.mjs
+      - name: Preview environment (for its Redis)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: npx --yes vercel@66.5.0 pull --yes --environment=preview --token="$VERCEL_TOKEN"
+      - name: "Upstash: the Preview Redis is preview-only, and this run fits in 25% of what it has left this month"
+        id: budget
+        env:
+          UPSTASH_EMAIL: ${{ secrets.UPSTASH_EMAIL }}
+          UPSTASH_API_KEY: ${{ secrets.UPSTASH_API_KEY }}
+        run: node tools/load/upstash-guard.mjs .vercel/.env.preview.local
+
+      - name: Branch expiry (3 hours from now)
+        id: expiry
+        run: echo "at=$(date -u -d '+3 hours' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - name: Neon branch for this load run, copied from the PR's preview branch
+        id: neon
+        uses: neondatabase/create-branch-action@72ed4f69a12b6be9c16aebfad893f6a21e9aba8b # v6.4.0
+        with:
+          project_id: ${{ secrets.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          branch_name: ${{ env.LOAD_BRANCH }}
+          parent_branch: preview/pr-${{ github.event.number }}
+          expires_at: ${{ steps.expiry.outputs.at }}
+      - name: Migrate (owner role)
+        run: npm run db:migrate
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.db_url }}
+      - name: Logins for app_runtime and readonly on this branch (random, masked)
+        env:
+          OWNER_URL: ${{ steps.neon.outputs.db_url }}
+          POOLED_URL: ${{ steps.neon.outputs.db_url_pooled }}
+        run: node scripts/preview-db-roles.mjs
+      - name: 200 accounts, sessions and PCs on the load branch
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.db_url }}
+          LOAD_SECURE_COOKIE: "1"
+        run: npx tsx scripts/load-seed.ts 200 load-seed.json
+
+      - name: Deploy a preview of this commit on the load branch (as app_runtime)
+        id: deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          npx --yes vercel@66.5.0 pull --yes --environment=preview --token="$VERCEL_TOKEN"
+          npx --yes vercel@66.5.0 build --token="$VERCEL_TOKEN"
+          url=$(npx --yes vercel@66.5.0 deploy --prebuilt --token="$VERCEL_TOKEN" \
+            --env DATABASE_URL="$RUNTIME_DATABASE_URL_POOLED" \
+            --env DATABASE_URL_READONLY="$READONLY_DATABASE_URL_POOLED" \
+            --env SYBIL_CHECKER_RULES=report \
+            --env AGENT_IP_LIMIT_PER_MIN=1000000 \
+            --env SERVER_TIMING=1)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Target is this run's preview deployment and its load branch (never production)
+        env:
+          TARGET: ${{ steps.deploy.outputs.url }}
+        run: |
+          host=$(node -e 'process.stdout.write(new URL(process.env.TARGET).hostname)')
+          echo "k6 target: https://$host (a per-deployment preview URL from vercel deploy without --prod)"
+          echo "Its database: Neon branch '$LOAD_BRANCH', copied from the PR's preview branch for this run"
+          case "$host" in
+            nightshift-ten-iota.vercel.app|*nightshift.in) echo "refusing: that is production"; exit 1 ;;
+            nightshift-*-inrvishals-projects.vercel.app) ;;
+            *) echo "refusing: not a preview deployment URL"; exit 1 ;;
+          esac
+
+      - name: The network alone, runner to preview (edge reached, time to first byte for a cached static file and for a one-query function)
+        if: env.MODE == 'load-test'
+        env:
+          TARGET: ${{ steps.deploy.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: bash tools/load/network.sh
+      - name: k6
+        if: env.MODE == 'load-test'
+        env: { K6_VERSION: "2.3.0" }
+        run: |
+          F="k6-v${K6_VERSION}-linux-amd64.tar.gz"
+          BASE="https://github.com/grafana/k6/releases/download/v${K6_VERSION}"
+          curl -sSfL -o "$F" "$BASE/$F"
+          curl -sSfL -o k6-checksums.txt "$BASE/k6-v${K6_VERSION}-checksums.txt"
+          grep " $F\$" k6-checksums.txt | sha256sum -c -
+          tar -xzf "$F" --strip-components=1 "k6-v${K6_VERSION}-linux-amd64/k6"
+      - name: "200 virtual users for 3 minutes against the preview (judged on successful responses: p95 heartbeat 300, lease/quote/confirm 400, hand-in 500 ms; < 1% failed; no 429; no 5xx)"
+        if: env.MODE == 'load-test'
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: ./k6 run --summary-export k6-summary.json -e BASE_URL="$BASE_URL" -e SEED_FILE="$PWD/load-seed.json" -e SERVER_TIMING=1 tools/load/k6-load.js
+      - name: Per endpoint, where the time went (from Server-Timing)
+        if: always() && env.MODE == 'load-test'
+        run: node tools/load/split.mjs k6-summary.json || true
+
+      - name: "Hold mode: publish the URL and seed, encrypted to tools/load/hold.crt"
+        if: env.MODE == 'load-test-hold'
+        env:
+          TARGET: ${{ steps.deploy.outputs.url }}
+        run: |
+          node -e 'const fs=require("fs"); fs.writeFileSync("hold.json", JSON.stringify({ url: process.env.TARGET, branch: process.env.LOAD_BRANCH, seed: JSON.parse(fs.readFileSync("load-seed.json","utf8")) }))'
+          openssl cms -encrypt -binary -aes256 -in hold.json -outform DER -out hold.cms tools/load/hold.crt
+          rm -f hold.json
+          echo "encrypted hand-off: $(wc -c < hold.cms) bytes"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: env.MODE == 'load-test-hold'
+        with: { name: "load-hold-${{ github.run_id }}", path: hold.cms, retention-days: 1, if-no-files-found: error }
+      - name: "Hold mode: keep the deployment up for 20 minutes while k6 runs from India"
+        if: env.MODE == 'load-test-hold'
+        run: |
+          echo "ready at $(date -u +%H:%M:%SZ): run tools/load/run-remote.sh ${GITHUB_RUN_ID} now; cleanup at $(date -u -d '+20 minutes' +%H:%M:%SZ)"
+          sleep 1200
+
+      - name: "Upstash: commands this run actually used"
+        if: always() && steps.budget.outputs.used_before != ''
+        env:
+          UPSTASH_EMAIL: ${{ secrets.UPSTASH_EMAIL }}
+          UPSTASH_API_KEY: ${{ secrets.UPSTASH_API_KEY }}
+          USED_BEFORE: ${{ steps.budget.outputs.used_before }}
+        run: node tools/load/upstash-guard.mjs .vercel/.env.preview.local --after "$USED_BEFORE" || true
+      - name: Free-tier quota this run used
+        if: always()
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+          BRANCH_ID: ${{ steps.neon.outputs.branch_id }}
+        run: |
+          if [ -f k6-summary.json ]; then node tools/load/quota.mjs k6-summary.json || true; fi
+          if [ -n "$BRANCH_ID" ]; then
+            curl -sS -H "Authorization: Bearer $NEON_API_KEY" -H "Accept: application/json" \
+              "https://console.neon.tech/api/v2/projects/$NEON_PROJECT_ID/branches/$BRANCH_ID" \
+              | jq -r '.branch | "Neon (this branch, as reported so far; Neon updates these with a delay): compute \(.compute_time_seconds // 0) CU-seconds, active \(.active_time_seconds // 0) s, written \(.written_data_bytes // 0) bytes (free plan: 100 CU-hours a month per project)"' || true
+          fi
+
+      - name: Remove the load deployment
+        if: always() && steps.deploy.outputs.url != ''
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          TARGET: ${{ steps.deploy.outputs.url }}
+        run: |
+          # The REST API (the CLI won't delete without a person approving).
+          host=$(node -e 'process.stdout.write(new URL(process.env.TARGET).hostname)')
+          id=$(curl -sS -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v13/deployments/$host?teamId=$VERCEL_ORG_ID" | jq -r '.id // empty')
+          if [ -n "$id" ]; then
+            curl -sS -o /dev/null -w "removed the load deployment: HTTP %{http_code}\n" -X DELETE -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v13/deployments/$id?teamId=$VERCEL_ORG_ID"
+          else
+            echo "load deployment not found (already removed?)"
+          fi
+      - name: Delete the load branch
+        if: always()
+        uses: neondatabase/delete-branch-action@4468d825d5a88ef4012f1705a82f02ec3072f776 # v3.2.1
+        with:
+          project_id: ${{ secrets.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          branch: ${{ env.LOAD_BRANCH }}

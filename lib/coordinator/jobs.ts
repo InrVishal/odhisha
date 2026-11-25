@@ -15,6 +15,7 @@ import { CoordinatorError, notFound } from "./errors";
 import { purgeTime } from "./lifecycle";
 import { toNodeView } from "./nodes";
 import { jobChecks, planVerification, type JobChecks } from "./verification";
+import { jobCovers, type JobCovers } from "./canary-only";
 import {
   nodeWatts,
   planFragments,
@@ -29,6 +30,7 @@ import {
   checkItems,
   encodeFragmentInput,
   estimateSeconds,
+  standardWorkSeconds,
   splitItems,
   WORKLOAD_TYPES,
   WORKLOADS,
@@ -48,6 +50,12 @@ export const quoteRequest = z.strictObject({
   workloadType: z.enum(WORKLOAD_TYPES),
   gpuClass: z.enum(NODE_CLASSES),
   params: z.record(z.string(), z.unknown()).default({}),
+  /**
+   * Once a piece of this job is verified, may it be re-run on other PCs as a
+   * known-answer canary (it never leaves the 7-day retention window)? The
+   * buyer can say no; checks of their own job still run.
+   */
+  canaryReuse: z.boolean().default(true),
 });
 
 export const textQuoteRequest = quoteRequest.extend({
@@ -92,6 +100,10 @@ export interface PublicJob {
   progress: { fragmentsDone: number; fragmentsTotal: number; nodesWorking: number };
   /** Pieces re-run on a second PC to check them, and how that went. */
   checks: JobChecks;
+  /** Pieces no independent PC could check, verified by canaries instead (canary-only). */
+  canaryOnly: JobCovers;
+  /** The buyer allows verified pieces to be reused as known-answer canaries. */
+  canaryReuse: boolean;
   resultsAvailable: boolean;
   purged: boolean;
   /** Payments are simulated in this prototype. */
@@ -114,7 +126,7 @@ async function availableNodes(db: Db, gpuClass: NodeClass, now: Date): Promise<N
  */
 export async function quoteJob(
   ctx: Ctx,
-  req: { workloadType: WorkloadType; gpuClass: NodeClass; params: unknown; items: InputItem[] },
+  req: { workloadType: WorkloadType; gpuClass: NodeClass; params: unknown; items: InputItem[]; canaryReuse?: boolean },
 ): Promise<PublicJob> {
   const spec = WORKLOADS[req.workloadType];
   // No pinned image means no agent can run it: refuse rather than take money
@@ -182,6 +194,7 @@ export async function quoteJob(
       deadlineAt: deadline,
       quoteExpiresAt,
       fragmentCount: counts.length,
+      canaryReuse: req.canaryReuse ?? true,
       // An unconfirmed quote's data goes when the quote expires.
       purgeAfter: quoteExpiresAt,
     });
@@ -194,6 +207,7 @@ export async function quoteJob(
         seq,
         kind: "primary",
         status: "pending",
+        deadlineAt: deadline,
         estGpuSeconds: fragmentSeconds[seq]!,
         itemCount: b - a,
         inputKey,
@@ -219,12 +233,14 @@ async function ownJob(db: Db, buyerId: string, jobId: string): Promise<typeof jo
 export const confirmInput = z.strictObject({ payWith: z.enum(["money", "credits"]).default("money") }).default({ payWith: "money" });
 
 /** Credits (standard GPU-seconds) a quoted job would cost if paid with Time-Bank credits. */
+/** Credits a job costs: the standard work of its pieces (same unit they earn) plus the 12% verification buffer. */
 export async function jobCreditCost(db: Db, jobId: string): Promise<number> {
   const rows = await db
-    .select({ est: fragments.estGpuSeconds })
+    .select({ items: fragments.itemCount, workload: jobs.workloadType })
     .from(fragments)
+    .innerJoin(jobs, eq(jobs.id, fragments.jobId))
     .where(and(eq(fragments.jobId, jobId), eq(fragments.kind, "primary")));
-  return creditCost(rows.map((r) => r.est));
+  return creditCost(rows.map((r) => standardWorkSeconds(WORKLOADS[r.workload], r.items)));
 }
 
 /**
@@ -307,14 +323,20 @@ export async function cancelQuote(ctx: Ctx, jobId: string): Promise<PublicJob> {
 }
 
 async function toPublicJob(db: Db, job: typeof jobs.$inferSelect): Promise<PublicJob> {
-  const [{ done } = { done: 0 }] = await db
-    .select({ done: countDistinct(fragments.seq) })
-    .from(fragments)
-    .where(and(eq(fragments.jobId, job.id), eq(fragments.status, "done"), inArray(fragments.kind, ["primary", "backup"])));
-  const [{ working } = { working: 0 }] = await db
-    .select({ working: countDistinct(fragments.leaseNodeId) })
-    .from(fragments)
-    .where(and(eq(fragments.jobId, job.id), eq(fragments.status, "leased")));
+  // Independent reads, asked at once: one database round trip instead of six.
+  const [[{ done } = { done: 0 }], [{ working } = { working: 0 }], netChargedPaise, creditCost, checks] = await Promise.all([
+    db
+      .select({ done: countDistinct(fragments.seq) })
+      .from(fragments)
+      .where(and(eq(fragments.jobId, job.id), eq(fragments.status, "done"), inArray(fragments.kind, ["primary", "backup"]))),
+    db
+      .select({ working: countDistinct(fragments.leaseNodeId) })
+      .from(fragments)
+      .where(and(eq(fragments.jobId, job.id), eq(fragments.status, "leased"))),
+    jobNetCharge(db, job.buyerId, job.id),
+    job.status === "quoted" ? jobCreditCost(db, job.id) : Promise.resolve(null),
+    checksAndCovers(db, job.id),
+  ]);
   const finished = Boolean(job.completedAt);
   return {
     id: job.id,
@@ -329,15 +351,23 @@ async function toPublicJob(db: Db, job: typeof jobs.$inferSelect): Promise<Publi
     confirmedAt: job.confirmedAt?.toISOString() ?? null,
     completedAt: job.completedAt?.toISOString() ?? null,
     refunded: Boolean(job.refundedAt),
-    netChargedPaise: await jobNetCharge(db, job.buyerId, job.id),
+    netChargedPaise,
     creditsSpent: job.creditsSpent,
-    creditCost: job.status === "quoted" ? await jobCreditCost(db, job.id) : null,
+    creditCost,
     progress: { fragmentsDone: done, fragmentsTotal: job.fragmentCount, nodesWorking: working },
-    checks: await jobChecks(db, job.id),
+    ...checks,
+    canaryReuse: job.canaryReuse,
     resultsAvailable: finished && !job.purgedAt,
     purged: Boolean(job.purgedAt),
     demo: true,
   };
+}
+
+/** A check switched to canary-only is no longer "waiting for a second PC". */
+async function checksAndCovers(db: Db, jobId: string): Promise<{ checks: JobChecks; canaryOnly: JobCovers }> {
+  const [checks, canaryOnly] = await Promise.all([jobChecks(db, jobId), jobCovers(db, jobId)]);
+  const covered = canaryOnly.waiting + canaryOnly.passed + canaryOnly.failed;
+  return { checks: { ...checks, waiting: Math.max(0, checks.waiting - covered) }, canaryOnly };
 }
 
 export async function getJob(ctx: Pick<Ctx, "db" | "buyerId">, jobId: string): Promise<PublicJob> {

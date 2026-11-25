@@ -3,21 +3,23 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import * as H from "@/lib/api/handlers";
 import { runTick } from "@/lib/coordinator/tick";
 import { TRUST_AFTER_RELEASE } from "@/lib/coordinator/verify";
-import { auditLog, fragments, nodes, ownerLedger, users } from "@/lib/db/schema";
+import { auditLog, fragments, nodes, ownerLedger } from "@/lib/db/schema";
 import { ownerEarnings } from "@/lib/ledger";
-import { freshDb } from "../helpers/db";
+import { makeAdmin } from "../helpers/admin";
+import { freshDb, type TestDb } from "../helpers/db";
 import { beat, body, complete, embeddingsFor, harness, jsonReq, lease, makeUser, quoteTexts, registerNode, type Harness, type Leased } from "../helpers/coordinator";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterAll(async () => {
-  for (const c of cleanups) await c();
+  await Promise.all(cleanups.map((c) => c()));
 });
 
 let h: Harness;
+let t: TestDb;
 beforeEach(async () => {
-  const { db, cleanup } = await freshDb();
-  cleanups.push(cleanup);
-  h = harness(db);
+  t = await freshDb();
+  cleanups.push(t.cleanup);
+  h = harness(t.db);
 });
 
 type User = Awaited<ReturnType<typeof makeUser>>;
@@ -212,19 +214,21 @@ describe("quarantine", () => {
     expect((await h.db.select().from(auditLog).where(eq(auditLog.action, "node.quarantined"))).map((r) => r.targetId)).toEqual([a!.nodeId]);
 
     // Release: owners can't, a non-admin gets a 404, an admin can (once).
-    const release = (u: User) => H.releaseNodeHandler(jsonReq("POST", `/api/admin/nodes/${a!.nodeId}/release`), h.as(u), a!.nodeId);
+    const releaseReq = () => jsonReq("POST", `/api/admin/nodes/${a!.nodeId}/release`);
+    const release = (u: User) => H.releaseNodeHandler(releaseReq(), h.as(u), a!.nodeId);
     expect((await release(a!.owner)).status).toBe(404);
-    const admin = await makeUser(h.db, "admin@example.in");
+    expect((await H.releaseNodeHandler(releaseReq(), h.as(null), a!.nodeId)).status).toBe(404);
+    const { user: admin, session } = await makeAdmin(t, h);
+    // The admin's own session row is needed: a user id alone isn't enough.
     expect((await release(admin)).status).toBe(404);
-    await h.db.update(users).set({ role: "admin" }).where(eq(users.id, admin.id));
-    expect((await release(admin)).status).toBe(200);
+    expect((await H.releaseNodeHandler(releaseReq(), h.as(admin, session), a!.nodeId)).status).toBe(200);
     expect(await node(a!.nodeId)).toMatchObject({ status: "offline", trustScore: TRUST_AFTER_RELEASE, quarantinedAt: null });
-    expect((await release(admin)).status).toBe(409);
+    expect((await H.releaseNodeHandler(releaseReq(), h.as(admin, session), a!.nodeId)).status).toBe(409);
     expect((await h.db.select().from(auditLog).where(eq(auditLog.action, "node.released")))[0]).toMatchObject({ actorId: admin.id, actorType: "admin" });
     // Back to work after its next heartbeat.
     expect((await beat(h, a!.token)).status).toBe(200);
     // A bad id and a cross-site request are refused too.
-    expect((await H.releaseNodeHandler(jsonReq("POST", "/api/admin/nodes/x/release"), h.as(admin), "x")).status).toBe(404);
-    expect((await H.releaseNodeHandler(jsonReq("POST", `/api/admin/nodes/${a!.nodeId}/release`, undefined, { origin: "https://evil.example" }), h.as(admin), a!.nodeId)).status).toBe(403);
+    expect((await H.releaseNodeHandler(jsonReq("POST", "/api/admin/nodes/x/release"), h.as(admin, session), "x")).status).toBe(404);
+    expect((await H.releaseNodeHandler(jsonReq("POST", `/api/admin/nodes/${a!.nodeId}/release`, undefined, { origin: "https://evil.example" }), h.as(admin, session), a!.nodeId)).status).toBe(403);
   });
 });

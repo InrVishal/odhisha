@@ -6,7 +6,11 @@ export class AuthzError extends Error {
   }
 }
 
+/**
+ * Who is signed in. Deliberately no role: whether someone is an admin is
+ * read from the database (and the ADMIN_EMAILS allowlist) at the moment it
+ * matters, never carried in the session (lib/admin.ts, isAdmin).
+ */
 export interface SessionUser {
   id: string;
-  role: "user" | "admin";
 }

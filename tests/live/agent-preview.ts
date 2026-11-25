@@ -33,13 +33,34 @@ function fail(msg: string): never {
 
 const sessionTokens: Record<string, string> = {};
 
-async function session(client: pg.Client, email: string, role: "user" | "admin" = "user"): Promise<string> {
+async function session(client: pg.Client, email: string): Promise<string> {
   const id = randomUUID();
   const token = randomBytes(32).toString("base64url");
-  await client.query(`insert into "user" (id, email, "emailVerified", role) values ($1, $2, now(), $3)`, [id, email, role]);
+  await client.query(`insert into "user" (id, email, "emailVerified") values ($1, $2, now())`, [id, email]);
   await client.query(`insert into "session" ("sessionToken", "userId", expires) values ($1, $2, now() + interval '1 hour')`, [token, id]);
   sessionTokens[email.split("-")[0]!] = token;
   return `__Secure-authjs.session-token=${token}`;
+}
+
+/** The preview's ADMIN_EMAILS (set by the CI deploy step): the second key for admin. */
+const CI_ADMIN_EMAIL = "admin@ci.nightshift.test";
+
+/**
+ * The CI admin, made the way production makes one: role set by the database
+ * owner role (this connection), the email on ADMIN_EMAILS, and a fresh login.
+ * Its authenticator is reset every run, so the browser test sets one up.
+ */
+async function adminSession(client: pg.Client): Promise<void> {
+  const { rows } = await client.query<{ id: string }>(
+    `insert into "user" (id, email, "emailVerified", role) values ($1, $2, now(), 'admin')
+     on conflict (email) do update set "emailVerified" = now() returning id`,
+    [randomUUID(), CI_ADMIN_EMAIL],
+  );
+  const id = rows[0]!.id;
+  await client.query("delete from admin_totp where user_id = $1", [id]);
+  const token = randomBytes(32).toString("base64url");
+  await client.query(`insert into "session" ("sessionToken", "userId", expires) values ($1, $2, now() + interval '1 hour')`, [token, id]);
+  sessionTokens.admin = token;
 }
 
 /**
@@ -87,10 +108,8 @@ async function main(): Promise<void> {
   const buyer = await session(client, `buyer-${suffix}@ci.nightshift.test`);
   // A second owner for the checking PC: a check by the same owner's PC earns no trust.
   const owner2 = await session(client, `checker-${suffix}@ci.nightshift.test`);
-  // For the signed-in dashboard browser tests that run next (tests/e2e/dashboard.spec.ts).
-  await session(client, `admin-${suffix}@ci.nightshift.test`, "admin");
   await client.end();
-  log("owner, buyer and admin sessions created in the preview database");
+  log("owner and buyer sessions created in the preview database");
 
   const reg = await api<{ node: { id: string }; token: string }>(owner, "POST", "/api/nodes", { name: "CI runner", gpuClass: "cpu" });
   // Time-Bank: this PC earns credits (not compute pay) for the buyer's piece.
@@ -164,7 +183,9 @@ async function main(): Promise<void> {
     ];
     for (const n of trust) {
       log(`node ${n.id.slice(0, 8)}: trust ${n.trustScore}, checks passed ${n.checksPassed}, failed ${n.checksFailed}`);
-      if (n.trustScore !== 520 || n.checksPassed !== 1 || n.checksFailed !== 0) fail("both PCs should have passed the check (trust 500 → 520)");
+      // At least the cross-check; a known-answer canary (sent at random, as in
+      // production) is one more pass. Each pass is +20 from 500, nothing failed.
+      if (n.checksPassed < 1 || n.checksFailed !== 0 || n.trustScore !== 500 + 20 * n.checksPassed) fail("both PCs should have passed every check (trust 500 + 20 per pass)");
     }
     log("PASS: the piece was re-run on a second PC, the results matched, and both PCs' trust went up");
 
@@ -204,6 +225,18 @@ async function main(): Promise<void> {
       const kinds = [...new Set(flags.rows.map((r) => r.kind))].sort();
       log(`sybil flags for the two CI accounts: ${JSON.stringify(kinds)}`);
       if (!kinds.includes("device") || !kinds.includes("subnet")) fail("two accounts on one machine should be flagged for the shared device and network");
+
+      // C: the deployment talks to the database as app_runtime, never as the owner.
+      await fetch(`${BASE}/api/health`, { headers: { "x-vercel-protection-bypass": BYPASS } });
+      const who = await db2.query<{ usename: string }>(
+        "select distinct usename from pg_stat_activity where datname = current_database() and usename is not null and pid <> pg_backend_pid() and backend_type = 'client backend'",
+      );
+      const roles = who.rows.map((r) => r.usename).sort();
+      log(`database roles connected to the preview database (besides this test): ${JSON.stringify(roles)}`);
+      if (!roles.includes("app_runtime")) fail("the deployment should connect as app_runtime");
+      const runtimeLog = await db2.query("select 1 from audit_log where action = 'admin.role_change_refused'");
+      log(`role changes refused so far on this branch: ${runtimeLog.rows.length}`);
+      log("PASS: the app's own connections are app_runtime (least privilege)");
       log("PASS: two accounts on one machine were flagged (same device, same network); the check still ran because previews only report (SYBIL_CHECKER_RULES=report)");
     } finally {
       await db2.end();
@@ -213,6 +246,11 @@ async function main(): Promise<void> {
     // A private temp file, never printed: the tokens are live for an hour.
     const authFile = process.env.E2E_AUTH_FILE;
     if (authFile) {
+      // The admin logs in last: admin pages need a login from the last 15 minutes.
+      const c3 = new pg.Client({ connectionString: DB });
+      await c3.connect();
+      await adminSession(c3);
+      await c3.end();
       writeFileSync(authFile, JSON.stringify({ ...sessionTokens, jobId, nodeId: reg.node.id }), { mode: 0o600 });
       log("sessions handed to the dashboard browser tests");
     }

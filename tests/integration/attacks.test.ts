@@ -7,10 +7,10 @@ import { CLASS_SPECS } from "@/lib/coordinator/classes";
 import { MAX_NODES_PER_OWNER } from "@/lib/coordinator/nodes";
 import { runTick } from "@/lib/coordinator/tick";
 import { heldEarnings } from "@/lib/coordinator/verification";
-import { auditLog, fragments, jobs, nodes, ownerLedger, users } from "@/lib/db/schema";
+import { auditLog, fragments, jobs, nodes, ownerLedger, users, canaryCovers } from "@/lib/db/schema";
 import { ownerEarnings } from "@/lib/ledger";
 import { freshDb } from "../helpers/db";
-import { agentReq, beat, body, complete, embeddingsFor, harness, jsonReq, lease, makeUser, quoteTexts, registerNode, type Harness, type Leased } from "../helpers/coordinator";
+import { agentReq, beat, body, complete, embeddingsFor, harness, jsonReq, lease, makeUser, quoteTexts, registerNode, type Harness, type Leased, honestChallengeOutput } from "../helpers/coordinator";
 
 /**
  * The attack table. One test per way a PC owner might try to cheat, each
@@ -20,7 +20,7 @@ import { agentReq, beat, body, complete, embeddingsFor, harness, jsonReq, lease,
 
 const cleanups: Array<() => Promise<void>> = [];
 afterAll(async () => {
-  for (const c of cleanups) await c();
+  await Promise.all(cleanups.map((c) => c()));
 });
 
 let h: Harness;
@@ -62,25 +62,6 @@ function madeUp(l: Leased, salt = 1): Buffer {
 function slightlyWrong(l: Leased): Buffer {
   const honest = JSON.parse(embeddingsFor(l).toString()) as { items: number[][] };
   return Buffer.from(JSON.stringify({ items: honest.items.map((v, i) => v.map((x, j) => x + ((i + j) % 3 === 0 ? 0.3 * (x || 1) : 0))) }));
-}
-
-/** A stand-in for the real model on challenge pieces: a bag of lowercase word vectors. */
-function honestChallengeOutput(l: Leased): Buffer {
-  const texts = (JSON.parse(Buffer.from(l.input, "base64").toString()) as { texts: string[] }).texts;
-  const word = (w: string) => {
-    const h = createHash("sha256").update(w).digest();
-    return Array.from({ length: 384 }, (_, j) => h[j % 32]! / 255 - 0.5 + Math.sin(j * (h[j % 32]! + 1)) * 0.1);
-  };
-  return Buffer.from(
-    JSON.stringify({
-      items: texts.map((t) => {
-        const v = Array(384).fill(0) as number[];
-        for (const w of t.toLowerCase().split(/\s+/)) word(w).forEach((x, j) => (v[j] = v[j]! + x));
-        const n = Math.sqrt(v.reduce((s, x) => s + x * x, 0));
-        return v.map((x) => x / n);
-      }),
-    }),
-  );
 }
 
 const isChallenge = async (l: Leased) => Boolean((await h.db.select({ c: jobs.challenge }).from(jobs).where(eq(jobs.id, l.parsed.jobId)))[0]?.c);
@@ -217,19 +198,20 @@ describe("attack table", () => {
     expect((await h.db.select().from(fragments).where(eq(fragments.id, check.parsed.taskId)))[0]!.kind).toBe("verification");
     await complete(h, outsider.token, check);
 
-    // With nobody else around, the check waits: not after 30 minutes, not after a day.
+    // With the other owner away, B never gets the check. While the other
+    // owner was seen in the last day, the check waits for them...
     await h.db.update(nodes).set({ status: "offline" }).where(eq(nodes.id, outsider.nodeId));
     await job();
     await complete(h, a.token, (await lease(h, a.token))!);
-    for (const wait of [31 * 60, 24 * 3600]) {
-      h.clock.advance(wait);
-      await beat(h, b.token);
-      expect(await lease(h, b.token)).toBeNull();
-    }
-    // The other owner comes back and takes it.
-    await beat(h, outsider.token);
-    const late = (await lease(h, outsider.token))!;
-    expect((await h.db.select().from(fragments).where(eq(fragments.id, late.parsed.taskId)))[0]!.kind).toBe("verification");
+    h.clock.advance(31 * 60);
+    await beat(h, b.token);
+    expect(await lease(h, b.token)).toBeNull();
+    expect(await h.db.select().from(canaryCovers)).toEqual([]);
+    // ...after that, it goes canary-only: still never to B, and A's pay waits for a canary.
+    h.clock.advance(24 * 3600);
+    await beat(h, b.token);
+    expect(await lease(h, b.token)).toBeNull();
+    expect((await h.db.select().from(canaryCovers)).map((c) => [c.nodeId, c.status])).toEqual([[a.nodeId, "waiting"]]);
 
     // And no more than 20 PCs per account.
     for (let i = 2; i < MAX_NODES_PER_OWNER; i++) await registerNode(h, farmer, { name: `Fake ${i}` });

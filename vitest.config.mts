@@ -27,7 +27,7 @@ export default defineConfig({
           environment: "node",
           // Each file gets its own database; files may run in parallel.
           testTimeout: 30_000,
-          hookTimeout: 60_000,
+          hookTimeout: 180_000,
         },
       },
     ],

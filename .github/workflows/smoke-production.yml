@@ -1,0 +1,53 @@
+# On demand: the production smoke test (read-only), from a GitHub runner, for
+# checking production after a change made outside CI (for example a new
+# Upstash database and a redeploy from Vercel's dashboard). Label any PR
+# "smoke-production" (write or triage access only). It runs main's checks,
+# not the PR's: production runs main's code.
+name: Smoke test (production)
+on:
+  pull_request:
+    types: [labeled]
+permissions: {}
+jobs:
+  smoke:
+    name: Production smoke test (main's checks, read-only)
+    if: github.event.label.name == 'smoke-production' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: main, persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "22" }
+      - name: Health, security headers and smoke test on production
+        env:
+          PROD_HOST: nightshift-ten-iota.vercel.app
+        run: |
+          code=$(curl -sS -o health.json -w '%{http_code}' "https://$PROD_HOST/api/health")
+          echo "/api/health: HTTP $code $(head -c 60 health.json)"
+          node scripts/check-headers.mjs "https://$PROD_HOST"
+          # smoke.mjs arrives with Phase 8; until then main has the headers check only.
+          if [ -f scripts/smoke.mjs ]; then node scripts/smoke.mjs "https://$PROD_HOST"; else echo "main has no scripts/smoke.mjs yet (Phase 8): headers and health only"; fi
+      # The routes that answered 500 while Upstash was down (docs/INCIDENTS.md).
+      # Anonymous, so they can't reach 200: each must answer as it does
+      # normally, and a 5xx fails the step. Sign-in and heartbeat check Upstash
+      # before anything else; quote checks the session first.
+      - name: "Rate-limited routes answer normally, not 5xx: sign-in, heartbeat, quote"
+        if: always()
+        env:
+          PROD_HOST: nightshift-ten-iota.vercel.app
+          INVALID_AGENT_TOKEN: deliberately-not-a-token
+        run: |
+          fail=0
+          probe() { # name, expected codes, curl args...
+            name=$1; want=$2; shift 2
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "$@")
+            case " $want " in *" $code "*) echo "ok    $name: HTTP $code" ;; *) echo "FAIL  $name: HTTP $code (expected $want)"; fail=1 ;; esac
+          }
+          probe "sign-in page" "200" "https://$PROD_HOST/signin"
+          probe "sign-in POST (login-IP limit in Upstash, then Auth.js refuses: no CSRF token)" "302 303 400" -X POST -H "content-type: application/x-www-form-urlencoded" --data "email=" "https://$PROD_HOST/api/auth/signin/resend"
+          probe "heartbeat (IP and PC limits in Upstash, then a bad token)" "401" -X POST -H "authorization: Bearer $INVALID_AGENT_TOKEN" -H "content-type: application/json" --data "{}" "https://$PROD_HOST/api/agent/heartbeat"
+          probe "quote (no session: refused before its limit)" "401 403" -X POST -H "origin: https://$PROD_HOST" -H "content-type: application/json" --data "{}" "https://$PROD_HOST/api/jobs/quote"
+          exit $fail

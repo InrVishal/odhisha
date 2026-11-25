@@ -1,10 +1,12 @@
 import "server-only";
-import { eq } from "drizzle-orm";
-import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
+import { notFound, redirect } from "next/navigation";
+import { adminAccess, sessionByToken, type AdminAccess, type SessionRow } from "@/lib/admin-access";
 import { getDb } from "@/lib/db";
-import { users } from "@/lib/db/schema";
+import { getEnv } from "@/lib/env";
 import { AuthzError, type SessionUser } from "./authz-error";
 import { auth } from "./index";
+import { SESSION_COOKIE_NAMES } from "./sessions";
 
 export { AuthzError, type SessionUser };
 
@@ -21,7 +23,7 @@ export { AuthzError, type SessionUser };
 export async function currentUser(): Promise<SessionUser | null> {
   const session = await auth();
   if (!session?.user?.id) return null;
-  return { id: session.user.id, role: session.user.role ?? "user" };
+  return { id: session.user.id };
 }
 
 /** For route handlers and server actions. Throws AuthzError(401). */
@@ -38,21 +40,30 @@ export async function requireUserOrRedirect(): Promise<SessionUser> {
   return user;
 }
 
+/** This request's session row (from its session cookie), or null. */
+export async function currentSession(): Promise<SessionRow | null> {
+  const jar = await cookies();
+  const token = SESSION_COOKIE_NAMES.map((n) => jar.get(n)?.value).find((v): v is string => Boolean(v));
+  return sessionByToken(await getDb(), token, new Date());
+}
+
 /**
- * Admin check. Re-reads the role from the database on every call instead of
- * trusting the session, so removing admin in the DB takes effect immediately.
- * The role column is only ever changed directly in the database.
+ * Admin access for this request, read from the database now (role, the
+ * ADMIN_EMAILS allowlist, login age, second factor). Never from a header,
+ * a cookie other than the session token, or anything proxy.ts set.
  */
-export async function requireAdmin(): Promise<SessionUser> {
-  const user = await requireUser();
-  const db = await getDb();
-  const [row] = await db
-    .select({ role: users.role, deletedAt: users.deletedAt })
-    .from(users)
-    .where(eq(users.id, user.id))
-    .limit(1);
-  if (!row || row.deletedAt || row.role !== "admin") throw new AuthzError(403);
-  return { id: user.id, role: "admin" };
+export async function currentAdminAccess(): Promise<AdminAccess> {
+  return adminAccess(await getDb(), await currentSession(), getEnv().ADMIN_EMAILS, new Date());
+}
+
+/**
+ * For the admin layout, its pages and its server actions: anyone who isn't
+ * an admin gets the plain 404 page, as if the page didn't exist.
+ */
+export async function adminOr404(): Promise<Exclude<AdminAccess, { state: "not_admin" }>> {
+  const access = await currentAdminAccess();
+  if (access.state === "not_admin") notFound();
+  return access;
 }
 
 /** Maps auth errors to a JSON response. Any other error is re-thrown. */

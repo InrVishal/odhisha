@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Db } from "@/lib/db/client";
 import { waitlist } from "@/lib/db/schema";
 
-export const waitlistInput = z.object({
+export const waitlistInput = z.strictObject({
   email: z.string().trim().toLowerCase().max(254).pipe(z.email()),
   interest: z.enum(["owner", "buyer", "both"]),
   // A checkbox sends "on" when ticked and nothing when not.

@@ -4,6 +4,7 @@ import { audit } from "@/lib/audit";
 import type { Db } from "@/lib/db/client";
 import { fragments, nodes } from "@/lib/db/schema";
 import { clawBack, clawBackPending } from "@/lib/credits";
+import { settleCovers } from "./canary-only";
 import { bookOwnerReversal, ledgerKeys } from "@/lib/ledger";
 import { recordSample } from "./samples";
 import { requeueLeased, type Q } from "./lifecycle";
@@ -64,6 +65,7 @@ async function insertCheck(q: Q, of: FragmentRow): Promise<void> {
     inputKey: of.inputKey,
     inputSha256: of.inputSha256,
     wrappedKey: of.wrappedKey,
+    deadlineAt: of.deadlineAt,
   });
 }
 
@@ -186,6 +188,12 @@ export async function resolveCheck(
   }
 
   await q.update(fragments).set({ verdict }).where(eq(fragments.id, check.id));
+  // A known-answer canary that's settled also settles the canary-only pieces of the PC it tested.
+  const settle = (canary: FragmentRow, passed: boolean) =>
+    settleCovers(q, { nodeId: canary.completedByNodeId!, canaryFragmentId: canary.id, passed, issuedAt: canary.startedAt ?? ctx.now, now: ctx.now, ipSecret: ctx.ipSecret });
+  if (check.canary && !first && verdict === "match") await settle(check, true);
+  if (first?.canary && verdict === "match") await settle(first, false);
+  if (first?.canary && verdict === "corrected") await settle(first, true);
   // A known-answer canary that agreed is also a timing run on the coordinator's clock.
   if (check.canary && verdict === "match" && check.startedAt && check.completedAt) {
     await recordSample(q, me, check.itemCount, check.completedAt.getTime() - check.startedAt.getTime());
@@ -329,6 +337,10 @@ export async function heldEarnings(q: Q, ownerId: string): Promise<number> {
         eq(ownerLedger.ownerId, ownerId),
         sql`(
           ${nodes.status} = 'quarantined'
+          or exists (
+            select 1 from canary_cover cc
+            where cc.fragment_id = ${ownerLedger.fragmentId} and cc.status = 'waiting'
+          )
           or exists (
             select 1 from fragment p
             where p.job_id = ${fragments.jobId} and p.seq = ${fragments.seq} and p.kind = 'primary' and p.verify

@@ -1,5 +1,7 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import AxeBuilder from "@axe-core/playwright";
+import { totpCode } from "../../lib/security/totp";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 
 /**
@@ -21,7 +23,6 @@ const DASHBOARD_PAGES = [
   "/dashboard/credits",
   "/dashboard/emi",
   "/dashboard/account",
-  "/dashboard/admin",
 ];
 
 test.describe("signed out", () => {
@@ -64,6 +65,18 @@ async function signIn(context: BrowserContext, baseURL: string | undefined, toke
   await context.addCookies([
     { name: `${https ? "__Secure-" : ""}authjs.session-token`, value: token, domain: url.hostname, path: "/", secure: https, httpOnly: true, sameSite: "Lax" },
   ]);
+}
+
+/**
+ * The admin server actions' IDs, from this build's manifest (the preview job
+ * builds the app, so it's on disk there). Anyone can find an action's ID in
+ * a bundle and POST to it: these tests call them directly.
+ */
+function adminActionIds(): Record<string, string> {
+  const file = path.resolve(".next/server/server-reference-manifest.json");
+  if (!existsSync(file)) return {};
+  const m = JSON.parse(readFileSync(file, "utf8")) as { node: Record<string, { filename?: string; exportedName?: string }> };
+  return Object.fromEntries(Object.entries(m.node).filter(([, v]) => v.filename === "app/admin/actions.ts").map(([id, v]) => [v.exportedName!, id]));
 }
 
 async function noSeriousA11yIssues(page: Page): Promise<void> {
@@ -120,6 +133,39 @@ test.describe("signed in (preview)", () => {
     expect(res?.status()).toBe(404);
   });
 
+  for (const who of ["buyer", "owner"] as const) {
+    test(`${who}: /admin, the admin API and admin server actions called by ID are all a 404`, async ({ page, context, baseURL }) => {
+      await signIn(context, baseURL, auth![who]);
+      for (const p of ["/admin", "/admin/anything"]) {
+        const res = await page.goto(p);
+        expect(res?.status(), p).toBe(404);
+        await expect(page.getByText(/authenticator|Quarantine list/)).toHaveCount(0);
+      }
+      const cookie = (await context.cookies()).map((c) => `${c.name}=${c.value}`).join("; ");
+      const req = page.request;
+      const api = "/api/admin/nodes/00000000-0000-4000-8000-000000000000/release";
+      for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) {
+        const r = await req.fetch(api, { method, headers: { cookie, origin: baseURL! } });
+        expect(r.status(), `${method} ${api}`).toBe(404);
+      }
+      // Spoofed headers don't help.
+      const spoofed = await page.request.get("/admin", { headers: { cookie, "x-middleware-subrequest": "middleware:middleware:middleware:middleware:middleware", "x-user-role": "admin" } });
+      expect(spoofed.status()).toBe(404);
+      // The actions themselves, called by ID: refused with the same 404.
+      const ids = adminActionIds();
+      test.skip(!ids.logInAgainAction, "this run has no build manifest on disk");
+      const noArgs = await req.post("/admin", { headers: { cookie, origin: baseURL!, "next-action": ids.logInAgainAction!, "content-type": "text/plain;charset=UTF-8" }, data: "[]" });
+      expect(noArgs.status(), "logInAgainAction").toBe(404);
+      const form = await req.post("/admin", {
+        headers: { cookie, origin: baseURL!, "next-action": ids.submitAdminCodeAction! },
+        multipart: { "0": '[{},"$K1"]', "1_code": "123456" },
+      });
+      expect(form.status(), "submitAdminCodeAction").toBe(404);
+      // Still nothing afterwards.
+      expect((await page.goto("/admin"))?.status()).toBe(404);
+    });
+  }
+
   test("buyer: downloads their data; deleting needs DELETE typed", async ({ page, context, baseURL }) => {
     await signIn(context, baseURL, auth!.buyer);
     await page.goto("/dashboard/account");
@@ -147,8 +193,12 @@ test.describe("signed in (preview)", () => {
     await expect(pc).toContainText("Speed, measured by NightShift");
     await expect(pc).toContainText("(shown only, not used)");
     await expect(pc).toContainText("All day");
-    await expect(pc).toContainText("520 / 1000");
-    await expect(pc).toContainText("1 passed, 0 failed");
+    // Its cross-check passed, and maybe a known-answer canary sent at random
+    // (as in production): +20 trust from 500 per pass, nothing failed.
+    const text = await pc.innerText();
+    const passed = Number(/(\d+) passed, 0 failed/.exec(text)?.[1] ?? 0);
+    expect(passed).toBeGreaterThanOrEqual(1);
+    expect(text).toContain(`${500 + 20 * passed} / 1000`);
     // A new PC: half its pieces are re-run. This one earns Time-Bank credits.
     await expect(pc).toContainText("50% (new PC: 1 of its first 20 pieces done)");
     await expect(pc).toContainText("Time-Bank credits (electricity still paid in rupees)");
@@ -162,7 +212,7 @@ test.describe("signed in (preview)", () => {
     await expect(page.getByRole("region", { name: "Every piece your PCs ran" })).toContainText("CI runner");
 
     // Payout UPI ID: linked once per account, shown masked.
-    await page.getByLabel(/^(UPI ID|Change UPI ID)$/).fill("ci.owner@okaxis");
+    await page.getByLabel(/^(UPI ID|Change UPI ID)$/).fill(`ci.owner.${Date.now()}@okaxis`); // unique: the preview branch (and its accounts) outlives one run, and one UPI ID belongs to one account
     await page.getByRole("button", { name: /^(Link UPI ID|Change)$/ }).click();
     await expect(page.getByRole("status")).toHaveText("Linked ci•••@okaxis.");
     await expect(page.getByText("Payout UPI ID: ci•••@okaxis")).toBeVisible();
@@ -184,12 +234,16 @@ test.describe("signed in (preview)", () => {
     await page.goto("/dashboard/emi");
     await expect(page.getByRole("note")).toContainText("Demo mode: this is a simulator. NightShift doesn't lend money");
     const result = page.getByRole("region", { name: "Result" });
-    // The defaults: ₹26,000 at 15% for 12 months; 8 h × 30 nights × 50% at ₹25/h, 320 W at ₹9/kWh.
+    // The defaults: ₹26,000 at 15% for 12 months; 8 h × 30 nights × 40% at ₹25/h (the pricing page's rate), 320 W at ₹9/kWh.
     await expect(result).toContainText("₹2,346.72");
-    await expect(result).toContainText("₹3,000");
-    await expect(result).toContainText("minus ₹345.60 for electricity");
-    await expect(result).toContainText("127%");
-    await page.getByLabel("Share of those hours with work (%)").fill("0");
+    await expect(result).toContainText("₹2,400");
+    await expect(result).toContainText("minus ₹276.48 for electricity");
+    await expect(result).toContainText("102%");
+    await expect(result).toContainText("not guaranteed");
+    // Payoff at 20%, 40% and 70%: 24, 12 and 7 months.
+    const scenarios = page.getByRole("region", { name: "Payoff at 20%, 40% and 70% of night hours with work" });
+    await expect(scenarios.getByRole("row")).toHaveText([/Night hours with work/, /^20%.*24$/, /^40%.*12$/, /^70%.*7$/]);
+    await page.getByLabel(/Share of those hours with work/).fill("0");
     await expect(result).toContainText("Not within 10 years");
     await page.getByLabel("Interest (% a year)").fill("abc");
     // Scoped to the page: the route announcer is an alert too.
@@ -216,11 +270,28 @@ test.describe("signed in (preview)", () => {
     await expect(pc).toContainText("Removed");
   });
 
-  test("admin: sees every section of the admin panel", async ({ page, context, baseURL }) => {
+  test("admin: a fresh login, then an authenticator code, then every section of the admin panel", async ({ page, context, baseURL }) => {
     await signIn(context, baseURL, auth!.admin);
     await page.goto("/dashboard");
     await page.getByRole("navigation", { name: "Dashboard" }).getByRole("link", { name: "Admin" }).click();
+    await expect(page).toHaveURL(/\/admin$/);
+    // First visit: set up the second factor (as a person would, from the setup key on the page).
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Set up your authenticator");
+    await noSeriousA11yIssues(page);
+    const shown = (await page.getByTestId("totp-secret").innerText()).trim();
+    const secret = shown.replace(/\s+/g, "");
+    // This run's own secret (made just now on the throwaway preview database, for
+    // the CI-only admin), but kept out of the public CI log even in a failure
+    // message: GitHub masks both spellings from here on. No traces, screenshots
+    // or reports are uploaded from this job.
+    if (process.env.GITHUB_ACTIONS) process.stdout.write(`::add-mask::${secret}\n::add-mask::${shown}\n`);
+    await page.getByLabel("Code from the app").fill("000000");
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(page.locator("main#main").getByRole("alert")).toContainText("That code didn't work");
+    await page.getByLabel("Code from the app").fill(totpCode(secret, new Date()));
+    await page.getByRole("button", { name: "Continue" }).click();
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("Admin");
+    await noSeriousA11yIssues(page);
     for (const h of ["Quarantine list", "PCs", "Jobs", "Ledger", "Possible fake accounts", "Audit log"]) {
       await expect(page.getByRole("heading", { level: 2, name: h })).toBeVisible();
     }
@@ -228,6 +299,10 @@ test.describe("signed in (preview)", () => {
     await expect(page.getByRole("region", { name: "Audit log entries" })).toContainText("job.confirmed");
     // The two CI agents run on one machine under two accounts: flagged.
     await expect(page.getByRole("region", { name: "Flagged accounts" })).toContainText(/Same device|Same network/);
+    // Setting up the authenticator and viewing the panel were logged.
+    await page.reload();
+    await expect(page.getByRole("region", { name: "Audit log entries" })).toContainText("admin.mfa_enrolled");
+    await expect(page.getByRole("region", { name: "Audit log entries" })).toContainText("admin.viewed");
   });
 
   test("every dashboard page has one h1 and no serious accessibility issues", async ({ page, context, baseURL }) => {

@@ -95,11 +95,21 @@ describe("proxy", () => {
     );
   });
 
-  it("gives API routes a deny-all CSP and no-store", () => {
-    const res = proxy(new NextRequest("https://nightshift.test/api/health"));
-    expect(res.headers.get("content-security-policy")).toBe(API_CSP);
-    expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(res.headers.get("strict-transport-security")).toContain("preload");
+  it("gives API routes a deny-all CSP and no-store from next.config.ts, without running the proxy", async () => {
+    const { default: config } = await import("@/next.config");
+    const { config: proxyConfig } = await import("@/proxy");
+    const rules = await config.headers!();
+    const api = rules.find((r) => r.source === "/api/:path*");
+    const h = Object.fromEntries((api?.headers ?? []).map((x) => [x.key.toLowerCase(), x.value]));
+    expect(h["content-security-policy"]).toBe(API_CSP);
+    expect(h["cache-control"]).toBe("no-store");
+    expect(h["strict-transport-security"]).toContain("preload");
+    for (const k of Object.keys(STATIC_SECURITY_HEADERS)) expect(h[k.toLowerCase()]).toBe(STATIC_SECURITY_HEADERS[k]);
+    // The proxy's matcher skips /api/ (so no second CSP), and still covers pages.
+    const matcher = new RegExp(`^${proxyConfig.matcher[0]}$`);
+    expect(matcher.test("/api/agent/lease")).toBe(false);
+    expect(matcher.test("/pricing")).toBe(true);
+    expect(matcher.test("/dashboard/jobs")).toBe(true);
   });
 
   it("HSTS is preload-ready (2 years, subdomains, preload)", () => {

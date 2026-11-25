@@ -37,4 +37,22 @@ describe("magic link email", () => {
 
     await expect(sendMagicLink(env, "a@b.in", "https://x/link")).rejects.toThrow(/^email provider returned 422$/);
   });
+
+  it("previews send only to PREVIEW_EMAIL_ALLOWLIST, so a scanner can't make them send mail", async () => {
+    const env = { ...parseEnv({ ...base, EMAIL_TRANSPORT: "resend", AUTH_RESEND_KEY: "re_k", PREVIEW_EMAIL_ALLOWLIST: "Tester@CI.test" }), APP_ENV: "preview" as const };
+    expect(env.PREVIEW_EMAIL_ALLOWLIST).toEqual(["tester@ci.test"]);
+    const log = vi.spyOn(console, "info").mockImplementation(() => {});
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
+
+    await sendMagicLink(env, "zaproxy@example.com", "https://x/link");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(String(log.mock.calls[0]?.[0])).not.toContain("zaproxy");
+
+    await sendMagicLink(env, "tester@ci.test", "https://x/link");
+    expect(fetchSpy).toHaveBeenCalledOnce();
+
+    // Production has no allowlist: everyone can log in.
+    await sendMagicLink({ ...env, APP_ENV: "production" }, "someone@example.in", "https://x/link");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
 });

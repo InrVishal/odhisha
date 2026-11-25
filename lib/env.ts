@@ -34,6 +34,34 @@ function isEd25519PrivateKey(v: string): boolean {
   }
 }
 
+/**
+ * The database connection must be encrypted with the server's certificate
+ * checked. Neon hosts are reached over WebSockets (wss://, the certificate is
+ * verified by Node's TLS). Any other host needs sslmode=verify-full.
+ */
+export function dbTransportIsVerified(url: string): boolean {
+  if (url.startsWith("pglite:")) return false;
+  try {
+    const u = new URL(url);
+    if (u.hostname.endsWith(".neon.tech")) return u.searchParams.get("sslmode") !== "disable";
+    return u.searchParams.get("sslmode") === "verify-full";
+  } catch {
+    return false;
+  }
+}
+
+const emailList = z
+  .string()
+  .default("")
+  .transform((v, ctx) => {
+    const out: string[] = [];
+    for (const raw of v.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)) {
+      if (!z.email().safeParse(raw).success) ctx.addIssue({ code: "custom", message: "has an entry that isn't an email address" });
+      else out.push(raw);
+    }
+    return out;
+  });
+
 const optionalNonEmpty = z
   .string()
   .trim()
@@ -53,6 +81,34 @@ export const envSchema = z
         (v) => v.startsWith("postgres://") || v.startsWith("postgresql://") || v.startsWith("pglite:"),
         "must be a postgres:// URL or pglite:<dir>",
       ),
+
+    /**
+     * Optional second connection, as the "readonly" database role, for the
+     * admin reports. Unset: they use DATABASE_URL.
+     */
+    DATABASE_URL_READONLY: z
+      .string()
+      .trim()
+      .transform((v) => (v === "" ? undefined : v))
+      .optional()
+      .pipe(z.string().refine((v) => v.startsWith("postgres://") || v.startsWith("postgresql://"), "must be a postgres:// URL").optional()),
+
+    /**
+     * Admin is two keys: role = 'admin' in the database AND the account's
+     * email on this comma-separated list. Either one alone does nothing.
+     * Server-only, never NEXT_PUBLIC_. Empty: nobody is an admin.
+     */
+    ADMIN_EMAILS: emailList,
+    /** Where security alerts go (role changes, second-factor setup). Unset: every address on ADMIN_EMAILS. */
+    ADMIN_ALERT_EMAIL: emailList,
+    /**
+     * Previews only: magic links go only to these addresses; any other address
+     * is dropped (the page still says "check your email"). Keeps scanners and
+     * strangers from making the preview send mail. Empty: previews send none.
+     */
+    PREVIEW_EMAIL_ALLOWLIST: emailList,
+    /** Node's switch that turns off TLS certificate checks. Refused when deployed. */
+    NODE_TLS_REJECT_UNAUTHORIZED: z.string().optional(),
 
     // Auth.js
     AUTH_SECRET: z.string().min(32, "must be at least 32 characters"),
@@ -119,6 +175,10 @@ export const envSchema = z
      * where the test agents all run on one CI machine. Refused in production.
      */
     SYBIL_CHECKER_RULES: z.enum(["enforce", "report"]).default("enforce"),
+    /** Preview load test only: raises the per-IP agent limit (see policyFor in lib/ratelimit.ts). Refused in production. */
+    AGENT_IP_LIMIT_PER_MIN: z.coerce.number().int().min(1).max(1_000_000).optional(),
+    /** Preview load test only: Server-Timing on the measured API routes (lib/timing.ts). Refused in production. */
+    SERVER_TIMING: z.enum(["0", "1"]).optional(),
 
     // Payments, UPI payouts and EMI are always simulated in this prototype.
     DEMO_MODE: z
@@ -154,6 +214,12 @@ export const envSchema = z
       });
     }
 
+    if (e.APP_ENV === "production" && e.SERVER_TIMING === "1") {
+      ctx.addIssue({ code: "custom", path: ["SERVER_TIMING"], message: "must not be on in production (it is for the preview load test only)" });
+    }
+    if (e.APP_ENV === "production" && e.AGENT_IP_LIMIT_PER_MIN !== undefined) {
+      ctx.addIssue({ code: "custom", path: ["AGENT_IP_LIMIT_PER_MIN"], message: "must not be set in production (it is for the preview load test only)" });
+    }
     if (e.APP_ENV === "production" && e.SYBIL_CHECKER_RULES !== "enforce") {
       ctx.addIssue({ code: "custom", path: ["SYBIL_CHECKER_RULES"], message: "must be 'enforce' in production" });
     }
@@ -161,6 +227,14 @@ export const envSchema = z
     if (deployed) {
       if (e.DATABASE_URL.startsWith("pglite:")) {
         ctx.addIssue({ code: "custom", path: ["DATABASE_URL"], message: "pglite is for local dev/test only" });
+      } else if (!dbTransportIsVerified(e.DATABASE_URL)) {
+        ctx.addIssue({ code: "custom", path: ["DATABASE_URL"], message: "must use TLS with the certificate verified (a Neon host, or sslmode=verify-full)" });
+      }
+      if (e.DATABASE_URL_READONLY && !dbTransportIsVerified(e.DATABASE_URL_READONLY)) {
+        ctx.addIssue({ code: "custom", path: ["DATABASE_URL_READONLY"], message: "must use TLS with the certificate verified (a Neon host, or sslmode=verify-full)" });
+      }
+      if (e.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
+        ctx.addIssue({ code: "custom", path: ["NODE_TLS_REJECT_UNAUTHORIZED"], message: "must not be 0 in preview/production: it turns off certificate checks for every connection" });
       }
       if (e.EMAIL_TRANSPORT !== "resend") {
         ctx.addIssue({ code: "custom", path: ["EMAIL_TRANSPORT"], message: "must be 'resend' in preview/production" });
@@ -180,7 +254,7 @@ export const envSchema = z
 export type Env = z.infer<typeof envSchema>;
 
 /** Secret-looking names that must never be shipped to the browser. */
-const SECRET_NAME = /(SECRET|TOKEN|PASSWORD|PRIVATE|_KEY$|^KEY_|DSN|DATABASE)/i;
+const SECRET_NAME = /(SECRET|TOKEN|PASSWORD|PRIVATE|_KEY$|^KEY_|DSN|DATABASE|ADMIN)/i;
 
 export function findLeakedPublicSecrets(source: Record<string, string | undefined>): string[] {
   return Object.keys(source).filter((k) => k.startsWith("NEXT_PUBLIC_") && SECRET_NAME.test(k));

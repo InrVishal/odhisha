@@ -10,7 +10,7 @@ import { beat, body, complete, harness, jsonReq, lease, makeUser, quoteTexts, re
 
 const cleanups: Array<() => Promise<void>> = [];
 afterAll(async () => {
-  for (const c of cleanups) await c();
+  await Promise.all(cleanups.map((c) => c()));
 });
 
 let h: Harness;

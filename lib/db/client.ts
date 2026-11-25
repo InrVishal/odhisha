@@ -1,5 +1,6 @@
 import type { SQL } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
+import { serverTimingEnabled, timePool } from "@/lib/timing";
 import * as schema from "./schema";
 
 /**
@@ -30,7 +31,14 @@ function isNeonHost(url: string): boolean {
  *   transactions, which the ledger and leasing code need).
  * - anything else → node-postgres (CI uses a Postgres service container).
  */
-export async function createDb(url: string): Promise<DbHandle> {
+export interface PoolOptions {
+  /** Connections per pool (default 10). Tests use a few, so many test databases fit in one server. */
+  max?: number;
+  /** Close idle connections after this many ms (default 10 s). */
+  idleTimeoutMillis?: number;
+}
+
+export async function createDb(url: string, pool: PoolOptions = {}): Promise<DbHandle> {
   if (url.startsWith("pglite:")) {
     const { PGlite } = await import("@electric-sql/pglite");
     const { drizzle } = await import("drizzle-orm/pglite");
@@ -44,14 +52,25 @@ export async function createDb(url: string): Promise<DbHandle> {
     const { Pool, neonConfig } = await import("@neondatabase/serverless");
     const { drizzle } = await import("drizzle-orm/neon-serverless");
     if (typeof WebSocket !== "undefined") neonConfig.webSocketConstructor = WebSocket;
+    // Secure WebSockets only: TLS with the certificate checked by Node, never unencrypted.
+    neonConfig.useSecureWebSocket = true;
     const pool = new Pool({ connectionString: url });
+    if (serverTimingEnabled()) timePool(pool as unknown as Parameters<typeof timePool>[0]);
     return { db: drizzle(pool, { schema }) as unknown as Db, driver: "neon", close: () => pool.end() };
   }
 
   const { Pool } = await import("pg");
   const { drizzle } = await import("drizzle-orm/node-postgres");
-  const pool = new Pool({ connectionString: url, max: 10 });
-  return { db: drizzle(pool, { schema }) as unknown as Db, driver: "pg", close: () => pool.end() };
+  // sslmode=verify-full: the server's certificate and host name are checked.
+  const verifyFull = new URL(url).searchParams.get("sslmode") === "verify-full";
+  const pg = new Pool({
+    connectionString: url,
+    max: pool.max ?? 10,
+    idleTimeoutMillis: pool.idleTimeoutMillis ?? 10_000,
+    ...(verifyFull ? { ssl: { rejectUnauthorized: true } } : {}),
+  });
+  if (serverTimingEnabled()) timePool(pg as unknown as Parameters<typeof timePool>[0]);
+  return { db: drizzle(pg, { schema }) as unknown as Db, driver: "pg", close: () => pg.end() };
 }
 
 /** Applies every migration in ./drizzle using the driver-matched migrator. */

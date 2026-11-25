@@ -10,11 +10,11 @@ Writes need a same-origin `Origin` header.
 
 | Method | Path | Body | Notes |
 | --- | --- | --- | --- |
-| POST | `/api/jobs/quote` | Text jobs: JSON `{ workloadType: "text_embeddings", gpuClass, params, texts: [...] }`. Image jobs: `multipart/form-data` with a `request` field (JSON `{ workloadType, gpuClass, params }`) and `images` files | 201 `{ job }` with price, breakdown and deadline. Held 10 minutes. 503 `no_capacity` if no PC of that class can finish it tonight. Max 5 open quotes. Limited to 30 a minute |
+| POST | `/api/jobs/quote` | Text jobs: JSON `{ workloadType: "text_embeddings", gpuClass, params, texts: [...], canaryReuse? }`. Image jobs: `multipart/form-data` with a `request` field (JSON `{ workloadType, gpuClass, params, canaryReuse? }`) and `images` files. `canaryReuse` (default true): may verified pieces be re-run on other PCs as known-answer canaries. Unknown fields (`role`, `ownerId`, ...) are a 400 | 201 `{ job }` with price, breakdown and deadline. Held 10 minutes. 503 `no_capacity` if no PC of that class can finish it tonight. Max 5 open quotes. Limited to 30 a minute |
 | POST | `/api/jobs/{id}/confirm` | none, or `{ payWith: "money" \| "credits" }` | Queues the job. `money` (default): charges (simulated). `credits`: spends verified Time-Bank credits (the quote's `creditCost`, oldest-expiring first; 409 `not_enough_credits`). 409 `quote_expired` / `not_quoted`. Limited to 10 a minute |
 | POST | `/api/jobs/{id}/cancel` | – | Only for a quote that hasn't been confirmed. Deletes its data now |
 | GET | `/api/jobs` | – | The buyer's last 50 jobs |
-| GET | `/api/jobs/{id}` | – | Status, progress (`fragmentsDone`, `fragmentsTotal`, `nodesWorking`), `refunded`, `netChargedPaise`, `creditCost` (while quoted: the price in standard GPU-seconds), `creditsSpent` (null when paid in money), and `checks` (`planned`, `matched`, `corrected`, `inconclusive`, `waiting`): the pieces re-run on a second PC and how that went |
+| GET | `/api/jobs/{id}` | – | Status, progress (`fragmentsDone`, `fragmentsTotal`, `nodesWorking`), `refunded`, `netChargedPaise`, `creditCost` (while quoted: the price in standard GPU-seconds), `creditsSpent` (null when paid in money), `checks` (`planned`, `matched`, `corrected`, `inconclusive`, `waiting`): the pieces re-run on a second PC and how that went, `canaryOnly` (`waiting`, `passed`, `failed`): pieces no independent PC could check, verified by canaries instead, and `canaryReuse` |
 | GET | `/api/jobs/{id}/results` | – | A streamed download (`Content-Disposition: attachment`): `{ jobId, workloadType, items: [...] }`, one item per input, in input order. 409 until the job finishes, 410 after the 7-day purge |
 | GET | `/api/jobs/{id}/invoice` | – | The invoice as a PDF download: the quote breakdown, the charge and, if the deadline was missed, the refund line. 409 `no_invoice` until the quote is confirmed |
 
@@ -55,11 +55,13 @@ Node management is limited to 20 requests an hour.
 
 All three are limited to 5 requests an hour.
 
-## Admin (session cookie, role `admin` in the database)
+## Admin (session cookie; see SECURITY.md, "Admin")
+
+Admin = role `admin` in the database **and** the email on `ADMIN_EMAILS`, plus a login from the last 15 minutes and an authenticator code on that session (set up and entered at `/admin`). Anyone else gets a 404 on every admin route and method; an admin without the step-up gets 403 `admin_step_up`.
 
 | Method | Path | Body | Notes |
 | --- | --- | --- | --- |
-| POST | `/api/admin/nodes/{id}/release` | – | Lets a quarantined PC work again, with trust just above the quarantine line. Anyone who isn't an admin (checked in the database on every call) gets a 404. 409 `not_quarantined` |
+| POST | `/api/admin/nodes/{id}/release` | – | Lets a quarantined PC work again, with trust just above the quarantine line. Audited. 409 `not_quarantined`. GET/PUT/PATCH/DELETE: 404 |
 
 ## Prices
 

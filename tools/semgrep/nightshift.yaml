@@ -1,27 +1,68 @@
 # Project rules. CI runs these with the p/default, p/owasp-top-ten,
 # p/typescript and p/python registry packs and fails on ERROR findings.
+# Each rule has examples that must (ruleid) and must not (ok) match in
+# nightshift.ts / nightshift.py next to this file: `semgrep --test tools/semgrep`.
 rules:
   - id: no-raw-sql
     languages: [typescript]
     severity: ERROR
     message: >-
       sql.raw() puts a string into SQL without parameters. Use the sql`...`
-      template tag or Drizzle's query builder.
+      template tag or Drizzle's query builder. Banned everywhere, tests too.
     pattern: sql.raw(...)
-    paths:
-      exclude: [tests/]
 
   - id: no-string-built-sql
     languages: [typescript]
     severity: ERROR
-    message: Build queries with the sql`...` tag or the query builder, never string concatenation.
+    message: Build queries with the sql`...` tag or the query builder, never a string (concatenated, interpolated or plain).
     pattern-either:
       - pattern: $DB.execute(`...${$X}...`)
       - pattern: $DB.execute("..." + $X)
+      - pattern: $DB.execute("...")
       - pattern: $DB.query(`...${$X}...`)
       - pattern: $DB.query("..." + $X)
     paths:
-      exclude: [tests/]
+      exclude: [tests/helpers/db.ts]
+
+  - id: sql-identifier-literal-only
+    languages: [typescript]
+    severity: ERROR
+    message: >-
+      sql.identifier() quotes a table or column name but can't make a
+      user-chosen one safe. Only pass a string literal.
+    patterns:
+      - pattern: sql.identifier($X)
+      - pattern-not: sql.identifier("...")
+    paths:
+      exclude: [tests/integration/]
+
+  - id: no-role-writes
+    languages: [typescript]
+    severity: ERROR
+    message: >-
+      Nothing in the app sets an account's role or an admin flag. Roles are
+      changed only by the database owner role (see SECURITY.md, "Admin").
+    pattern-either:
+      - pattern: '$Q.set({..., role: $V, ...})'
+      - pattern: '$Q.values({..., role: $V, ...})'
+      - pattern: '$Q.set({..., isAdmin: $V, ...})'
+      - pattern: '$Q.values({..., isAdmin: $V, ...})'
+    paths:
+      exclude: [tests/integration/, tests/helpers/]
+
+  - id: no-trusting-middleware-headers
+    languages: [typescript]
+    severity: ERROR
+    message: >-
+      Never decide anything from x-middleware-subrequest or made-up role
+      headers: anyone can send them. Authorization reads the session and the
+      database only.
+    pattern-either:
+      - pattern: $H.get("x-middleware-subrequest")
+      - pattern: $H.get("x-user-role")
+      - pattern: $H.get("x-admin")
+      - pattern: $H.get("x-role")
+      - pattern: $H.get("x-user-id")
 
   - id: no-eval
     languages: [typescript, javascript]
@@ -47,13 +88,13 @@ rules:
       - pattern: execSync(...)
       - pattern: exec(...)
     paths:
-      include: [lib/, app/, scripts/]
+      include: [lib/, app/, scripts/, tools/semgrep/]
 
   - id: no-public-secret-env
     languages: [typescript]
     severity: ERROR
     message: Secrets must never use the NEXT_PUBLIC_ prefix (it ships them to the browser).
-    pattern-regex: process\.env\.NEXT_PUBLIC_\w*(SECRET|TOKEN|PASSWORD|PRIVATE|KEY|DSN|DATABASE)\w*
+    pattern-regex: process\.env\.NEXT_PUBLIC_\w*(SECRET|TOKEN|PASSWORD|PRIVATE|KEY|DSN|DATABASE|ADMIN)\w*
 
   - id: py-no-shell-true
     languages: [python]
