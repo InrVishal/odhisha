@@ -28,7 +28,8 @@ jobs:
           code=$(curl -sS -o health.json -w '%{http_code}' "https://$PROD_HOST/api/health")
           echo "/api/health: HTTP $code $(head -c 60 health.json)"
           node scripts/check-headers.mjs "https://$PROD_HOST"
-          node scripts/smoke.mjs "https://$PROD_HOST"
+          # smoke.mjs arrives with Phase 8; until then main has the headers check only.
+          if [ -f scripts/smoke.mjs ]; then node scripts/smoke.mjs "https://$PROD_HOST"; else echo "main has no scripts/smoke.mjs yet (Phase 8): headers and health only"; fi
       # The routes that answered 500 while Upstash was down (docs/INCIDENTS.md).
       # Anonymous, so they can't reach 200: each must answer as it does
       # normally, and a 5xx fails the step. Sign-in and heartbeat check Upstash
