@@ -29,3 +29,24 @@ jobs:
           echo "/api/health: HTTP $code $(head -c 60 health.json)"
           node scripts/check-headers.mjs "https://$PROD_HOST"
           node scripts/smoke.mjs "https://$PROD_HOST"
+      # The routes that answered 500 while Upstash was down (docs/INCIDENTS.md).
+      # Anonymous, so they can't reach 200: each must answer as it does
+      # normally, and a 5xx fails the step. Sign-in and heartbeat check Upstash
+      # before anything else; quote checks the session first.
+      - name: "Rate-limited routes answer normally, not 5xx: sign-in, heartbeat, quote"
+        if: always()
+        env:
+          PROD_HOST: nightshift-ten-iota.vercel.app
+          INVALID_AGENT_TOKEN: deliberately-not-a-token
+        run: |
+          fail=0
+          probe() { # name, expected codes, curl args...
+            name=$1; want=$2; shift 2
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "$@")
+            case " $want " in *" $code "*) echo "ok    $name: HTTP $code" ;; *) echo "FAIL  $name: HTTP $code (expected $want)"; fail=1 ;; esac
+          }
+          probe "sign-in page" "200" "https://$PROD_HOST/signin"
+          probe "sign-in POST (login-IP limit in Upstash, then Auth.js refuses: no CSRF token)" "302 303 400" -X POST -H "content-type: application/x-www-form-urlencoded" --data "email=" "https://$PROD_HOST/api/auth/signin/resend"
+          probe "heartbeat (IP and PC limits in Upstash, then a bad token)" "401" -X POST -H "authorization: Bearer $INVALID_AGENT_TOKEN" -H "content-type: application/json" --data "{}" "https://$PROD_HOST/api/agent/heartbeat"
+          probe "quote (no session: refused before its limit)" "401 403" -X POST -H "origin: https://$PROD_HOST" -H "content-type: application/json" --data "{}" "https://$PROD_HOST/api/jobs/quote"
+          exit $fail
